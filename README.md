@@ -1,13 +1,4 @@
-# GigaLearnCPP Leaked Version
-
--------------
-# This is the version that cheaters decided to leak :(
-
-### This library was intended to be private, but apparently we can't have nice things. 
-
-A trusted former GigaLearn user (with source code access) decided to join the cheaters and then share around this library, now it's public.
-Thus, I am formally publishing this specific version for anyone to use.
-
+# GigaLearnCPP
 -------------
 
 GigaLearn is an even-faster C++ machine learning framework for Rocket League bots.
