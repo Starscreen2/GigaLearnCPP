@@ -54,7 +54,7 @@ ___*
 *.PT
 
 # Don't include libtorch if in local dir
-libtorch
+libtorch*
 *.lt
 
 /checkpoints

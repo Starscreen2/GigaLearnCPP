@@ -8,7 +8,7 @@ GGL::Model::Model(
 	const char* modelName,
 	ModelConfig config,
 	torch::Device device) : 
-	modelName(modelName), device(device), seq({}), seqHalf({}), config(config) {
+	modelName(modelName), device(device), seq(), seqHalf(), config(config) {
 
 	if (!config.IsValid())
 		RG_ERR_CLOSE("Failed to create model \"" << modelName << "\" with invalid config");

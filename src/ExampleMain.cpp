@@ -95,19 +95,25 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 
 int main(int argc, char* argv[]) {
 	// Initialize RocketSim with collision meshes
-	// Change this path to point to your meshes!
-	RocketSim::Init("C:\\Users\\admin\\source\\repos\\RLArenaCollisionDumper\\collision_meshes");
+	// Path to the collision_meshes folder in your project directory
+	RocketSim::Init("C:\\Users\\thark\\OneDrive\\Desktop\\GitHubStuff\\GigaLearnCPP\\collision_meshes");
 
 	// Make configuration for the learner
 	LearnerConfig cfg = {};
 
+	// Device selection:
+	// GPU_CUDA - NVIDIA GPU with CUDA (fastest, requires CUDA toolkit)
+	// GPU_DIRECT_ML - Any GPU on Windows (slower than CUDA but works on AMD/Intel)
+	// CPU - CPU only (slowest, but always works)
 	cfg.deviceType = LearnerDeviceType::GPU_CUDA;
 
 	cfg.tickSkip = 8;
 	cfg.actionDelay = cfg.tickSkip - 1; // Normal value in other RLGym frameworks
 
-	// Play around with this to see what the optimal is for your machine, more games will consume more RAM
-	cfg.numGames = 256;
+	// Number of parallel game instances
+	// More games = faster training but more RAM usage
+	// Start with 128 if you have 16GB RAM, 256 for 32GB RAM
+	cfg.numGames = 256;  // Reduce to 128, 64, or 32 if you run out of memory
 
 	// Leave this empty to use a random seed each run
 	// The random seed can have a strong effect on the outcome of a run
@@ -116,7 +122,7 @@ int main(int argc, char* argv[]) {
 	int tsPerItr = 50'000;
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 50'000; // Lower this if too much VRAM is being allocated
+	cfg.ppo.miniBatchSize = 50'000; // Lower to 25000 or 10000 if you get VRAM errors
 
 	// Using 2 epochs seems pretty optimal when comparing time training to skill
 	// Perhaps 1 or 3 is better for you, test and find out!
