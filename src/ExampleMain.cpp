@@ -112,17 +112,18 @@ int main(int argc, char* argv[]) {
 
 	// Number of parallel game instances
 	// More games = faster training but more RAM usage
-	// Start with 128 if you have 16GB RAM, 256 for 32GB RAM
-	cfg.numGames = 256;  // Reduce to 128, 64, or 32 if you run out of memory
+	// 128 for 16GB RAM, 256 for 32GB RAM, 512-1024 for 64GB RAM
+	cfg.numGames = 512;  // Optimized for 64GB RAM - increase to 768 or 1024 if you want even faster training
 
 	// Leave this empty to use a random seed each run
 	// The random seed can have a strong effect on the outcome of a run
 	cfg.randomSeed = 123;
 
-	int tsPerItr = 50'000;
+	// Increased timesteps per iteration to better utilize 64GB RAM
+	int tsPerItr = 100'000;  // Doubled from 50k to collect more data per iteration
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 50'000; // Lower to 25000 or 10000 if you get VRAM errors
+	cfg.ppo.miniBatchSize = 100'000; // Increased for better GPU utilization (reduce if you get VRAM errors)
 
 	// Using 2 epochs seems pretty optimal when comparing time training to skill
 	// Perhaps 1 or 3 is better for you, test and find out!
@@ -161,6 +162,10 @@ int main(int argc, char* argv[]) {
 
 	cfg.sendMetrics = true; // Send metrics
 	cfg.renderMode = false; // Don't render
+
+	// Checkpoint saving: Save every 150 iterations
+	// With 100,000 timesteps per iteration, this saves every 15,000,000 timesteps
+	cfg.tsPerSave = 150 * tsPerItr; // 150 iterations = 15,000,000 timesteps
 
 	// Make the learner with the environment creation function and the config we just made
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);
