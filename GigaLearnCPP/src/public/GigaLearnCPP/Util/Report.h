@@ -97,5 +97,13 @@ namespace GGL {
 		}
 
 		void Display(std::vector<std::string> keyRows) const;
+		
+		// Display brief summary of key metrics to terminal
+		void DisplayBriefSummary() const;
+		
+		// Export full detailed summary to files (JSON and text)
+		// metricHistory: optional time series data for graph plotting
+		void ExportFullSummary(const std::filesystem::path& basePath, 
+		                       const std::vector<std::unordered_map<std::string, double>>& metricHistory = {}) const;
 	};
 }

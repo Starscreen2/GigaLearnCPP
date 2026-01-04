@@ -1,9 +1,11 @@
 # Automatic Milestone Saver for GigaLearnCPP
-# Saves a permanent copy every 100 checkpoints (every 1 billion timesteps)
+# Saves a permanent copy every N checkpoints (configurable interval)
+# Run this script while training to automatically save milestone checkpoints
 
-$checkpointsPath = "checkpoints"
+$checkpointsPath = "build\checkpoints"  # Checkpoints are saved in build/checkpoints
 $milestonesPath = "milestones"
-$milestoneInterval = 100  # Save milestone every 100 checkpoints (100M timesteps with current settings)
+$milestoneInterval = 2  # Save milestone every 2 checkpoints
+# Note: With current settings (tsPerSave = 22.5M), this saves every ~2.25 billion timesteps
 
 # Create milestones directory if it doesn't exist
 if (-not (Test-Path $milestonesPath)) {
@@ -19,7 +21,9 @@ if (Test-Path "$milestonesPath\.saved_list.txt") {
     }
 }
 
-Write-Host "Milestone Saver Started - Watching for checkpoints every $milestoneInterval iterations" -ForegroundColor Cyan
+Write-Host "Milestone Saver Started - Watching for checkpoints every $milestoneInterval checkpoints" -ForegroundColor Cyan
+Write-Host "Checkpoints path: $checkpointsPath" -ForegroundColor Gray
+Write-Host "Milestones path: $milestonesPath" -ForegroundColor Gray
 Write-Host "Press Ctrl+C to stop" -ForegroundColor Yellow
 Write-Host ""
 
@@ -32,29 +36,37 @@ while ($true) {
                        Where-Object { $_.Name -match '^\d+$' } |
                        Sort-Object { [long]$_.Name }
         
-        foreach ($checkpoint in $checkpoints) {
-            $timesteps = [long]$checkpoint.Name
-            $checkpointNum = $timesteps / 1000000  # Divide by 1M (your tsPerSave)
-            
-            # Check if this is a milestone (every 100 checkpoints)
-            if (($checkpointNum % $milestoneInterval) -eq 0 -and -not $savedMilestones.ContainsKey($checkpoint.Name)) {
-                $milestoneName = "milestone_${checkpointNum}_${timesteps}"
-                $milestonePath = Join-Path $milestonesPath $milestoneName
+        if ($checkpoints.Count -gt 0) {
+            # Count checkpoints sequentially (1st, 2nd, 3rd, etc.)
+            $checkpointIndex = 0
+            foreach ($checkpoint in $checkpoints) {
+                $checkpointIndex++
+                $timesteps = [long]$checkpoint.Name
                 
-                Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Saving MILESTONE: $milestoneName ($timesteps timesteps)" -ForegroundColor Green
-                
-                try {
-                    Copy-Item -Path $checkpoint.FullName -Destination $milestonePath -Recurse -Force
+                # Check if this is a milestone (every Nth checkpoint)
+                if (($checkpointIndex % $milestoneInterval) -eq 0 -and -not $savedMilestones.ContainsKey($checkpoint.Name)) {
+                    $milestoneName = "milestone_checkpoint${checkpointIndex}_${timesteps}"
+                    $milestonePath = Join-Path $milestonesPath $milestoneName
                     
-                    # Mark as saved
-                    $savedMilestones[$checkpoint.Name] = $true
-                    Add-Content -Path "$milestonesPath\.saved_list.txt" -Value $checkpoint.Name
+                    $timestamp = Get-Date -Format 'HH:mm:ss'
+                    Write-Host "[$timestamp] Saving MILESTONE #${checkpointIndex}: $milestoneName ($timesteps timesteps)" -ForegroundColor Green
                     
-                    Write-Host "  ? Milestone saved successfully!" -ForegroundColor Green
-                } catch {
-                    Write-Host "  ? Error saving milestone: $_" -ForegroundColor Red
+                    try {
+                        Copy-Item -Path $checkpoint.FullName -Destination $milestonePath -Recurse -Force
+                        
+                        # Mark as saved
+                        $savedMilestones[$checkpoint.Name] = $true
+                        Add-Content -Path "$milestonesPath\.saved_list.txt" -Value $checkpoint.Name
+                        
+                        Write-Host "  [OK] Milestone saved successfully to: $milestonePath" -ForegroundColor Green
+                    } catch {
+                        Write-Host "  [ERROR] Error saving milestone: $_" -ForegroundColor Red
+                    }
                 }
             }
         }
+    } else {
+        $timestamp = Get-Date -Format 'HH:mm:ss'
+        Write-Host "[$timestamp] Waiting for checkpoints directory: $checkpointsPath" -ForegroundColor Yellow
     }
 }

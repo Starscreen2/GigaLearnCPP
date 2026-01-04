@@ -6,6 +6,10 @@
 #include <torch/cuda.h>
 #include <nlohmann/json.hpp>
 #include <pybind11/embed.h>
+#include <filesystem>
+#include <iomanip>
+#include <chrono>
+#include <sstream>
 
 #ifdef RG_CUDA_SUPPORT
 #include <c10/cuda/CUDACachingAllocator.h>
@@ -135,6 +139,13 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 
 	if (!config.checkpointFolder.empty())
 		Load();
+
+	// Only clear runID if we want to force a new wandb run
+	// If resumeWandbRun is true, keep the runID from checkpoint to resume the same run
+	if (!config.resumeWandbRun) {
+		runID.clear(); // Force new wandb run (separate experiments)
+	}
+	// Otherwise, runID is kept from checkpoint to resume the same wandb run (continuous graphs)
 
 	if (config.savePolicyVersions && !config.renderMode) {
 		if (config.checkpointFolder.empty())
@@ -420,7 +431,41 @@ void GGL::Learner::StartTransferLearn(const TransferLearnConfig& tlConfig) {
 			if (versionMgr)
 				versionMgr->OnIteration(ppo, report, totalTimesteps, prevTimesteps);
 
+			// Finish report early if quitting to ensure all metrics are finalized
 			if (saveQueued) {
+				report.Finish();
+				
+				// Display brief summary in terminal
+				report.DisplayBriefSummary();
+				
+				// Export full summary to files
+				// Use same directory as checkpoints, or "build/training_summaries" if checkpoints disabled
+				std::filesystem::path summaryDir;
+				if (!config.checkpointFolder.empty()) {
+					// Use parent directory of checkpoints, or same directory
+					summaryDir = config.checkpointFolder.parent_path() / "training_summaries";
+					if (summaryDir == config.checkpointFolder.parent_path()) {
+						// If checkpointFolder has no parent, use "training_summaries" in current dir
+						summaryDir = std::filesystem::path("training_summaries");
+					}
+				} else {
+					summaryDir = std::filesystem::path("build") / "training_summaries";
+				}
+				std::filesystem::create_directories(summaryDir);
+				
+				// Generate timestamped filename
+				auto now = std::chrono::system_clock::now();
+				auto time_t = std::chrono::system_clock::to_time_t(now);
+				std::stringstream filename;
+				filename << "training_summary_" << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
+				
+				std::filesystem::path summaryPath = summaryDir / filename.str();
+				report.ExportFullSummary(summaryPath);
+				
+				RG_LOG("Full training summary exported to:");
+				RG_LOG("  JSON: " << summaryPath << ".json");
+				RG_LOG("  Text: " << summaryPath << ".txt");
+				
 				if (!config.checkpointFolder.empty())
 					Save();
 				exit(0);
@@ -838,14 +883,124 @@ void GGL::Learner::Start() {
 				totalIterations++;
 				report["Total Iterations"] = totalIterations;
 
-				if (versionMgr)
-					versionMgr->OnIteration(ppo, report, totalTimesteps, prevTimesteps);
+			if (versionMgr)
+				versionMgr->OnIteration(ppo, report, totalTimesteps, prevTimesteps);
 
-				if (saveQueued) {
-					if (!config.checkpointFolder.empty())
-						Save();
-					exit(0);
+			// Store metrics periodically for time series data (every 100 iterations or at checkpoints)
+			// This allows plotting graphs from the summary data
+			bool shouldSaveSnapshot = (totalIterations % 100 == 0) || 
+			                          (!config.checkpointFolder.empty() && 
+			                           (totalTimesteps / config.tsPerSave > prevTimesteps / config.tsPerSave));
+			
+			if (shouldSaveSnapshot) {
+				report.Finish(); // Ensure all averages are finalized
+				
+				MetricSnapshot snapshot = {};
+				snapshot.iteration = totalIterations;
+				snapshot.timesteps = totalTimesteps;
+				
+				// Store key metrics for graphing (not all metrics to save memory)
+				std::vector<std::string> keyMetrics = {
+					"Average Step Reward",
+					"Policy Entropy",
+					"Total Timesteps",
+					"Total Iterations",
+					"Rewards/AerialTouchReward",
+					"Rewards/SustainedAerialGoalReward",
+					"Rewards/GoalReward",
+					"Rewards/VelocityPlayerToBallReward",
+					"Player/Air Time",
+					"Player/Aerial Touch Ratio",
+					"Player/Touch Height",
+					"Player/Average Touch Force",
+					"Game/Blue Goals",
+					"Game/Orange Goals"
+				};
+				
+				// Always include iteration and timesteps for time series plotting
+				snapshot.metrics["iteration"] = (double)totalIterations;
+				snapshot.metrics["timesteps"] = (double)totalTimesteps;
+				
+				for (const std::string& key : keyMetrics) {
+					if (report.Has(key)) {
+						snapshot.metrics[key] = report[key];
+					}
 				}
+				
+				metricHistory.push_back(snapshot);
+				
+				// Limit history size to prevent excessive memory usage (keep last 10,000 snapshots)
+				if (metricHistory.size() > 10000) {
+					metricHistory.erase(metricHistory.begin(), metricHistory.begin() + (metricHistory.size() - 10000));
+				}
+			}
+
+			// Finish report early if quitting to ensure all metrics are finalized
+			if (saveQueued) {
+				report.Finish();
+				
+				// Store final snapshot
+				MetricSnapshot finalSnapshot = {};
+				finalSnapshot.iteration = totalIterations;
+				finalSnapshot.timesteps = totalTimesteps;
+				std::vector<std::string> keyMetrics = {
+					"Average Step Reward", "Policy Entropy", "Total Timesteps", "Total Iterations",
+					"Rewards/AerialTouchReward", "Rewards/SustainedAerialGoalReward", "Rewards/GoalReward",
+					"Rewards/VelocityPlayerToBallReward", "Player/Air Time", "Player/Aerial Touch Ratio",
+					"Player/Touch Height", "Player/Average Touch Force", "Game/Blue Goals", "Game/Orange Goals"
+				};
+				// Always include iteration and timesteps for time series plotting
+				finalSnapshot.metrics["iteration"] = (double)totalIterations;
+				finalSnapshot.metrics["timesteps"] = (double)totalTimesteps;
+				
+				for (const std::string& key : keyMetrics) {
+					if (report.Has(key)) {
+						finalSnapshot.metrics[key] = report[key];
+					}
+				}
+				metricHistory.push_back(finalSnapshot);
+				
+				// Convert metricHistory to format expected by ExportFullSummary
+				std::vector<std::unordered_map<std::string, double>> historyForExport;
+				for (const auto& snapshot : metricHistory) {
+					historyForExport.push_back(snapshot.metrics);
+				}
+				
+				// Display brief summary in terminal
+				report.DisplayBriefSummary();
+				
+				// Export full summary to files
+				// Use same directory as checkpoints, or "build/training_summaries" if checkpoints disabled
+				std::filesystem::path summaryDir;
+				if (!config.checkpointFolder.empty()) {
+					// Use parent directory of checkpoints, or same directory
+					summaryDir = config.checkpointFolder.parent_path() / "training_summaries";
+					if (summaryDir == config.checkpointFolder.parent_path()) {
+						// If checkpointFolder has no parent, use "training_summaries" in current dir
+						summaryDir = std::filesystem::path("training_summaries");
+					}
+				} else {
+					summaryDir = std::filesystem::path("build") / "training_summaries";
+				}
+				std::filesystem::create_directories(summaryDir);
+				
+				// Generate timestamped filename
+				auto now = std::chrono::system_clock::now();
+				auto time_t = std::chrono::system_clock::to_time_t(now);
+				std::stringstream filename;
+				filename << "training_summary_" << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
+				
+				std::filesystem::path summaryPath = summaryDir / filename.str();
+				report.ExportFullSummary(summaryPath, historyForExport);
+				
+				RG_LOG("Full training summary exported to:");
+				RG_LOG("  JSON: " << summaryPath << ".json");
+				RG_LOG("  Text: " << summaryPath << ".txt");
+				
+				if (!config.checkpointFolder.empty())
+					Save();
+				exit(0);
+			}
 
 				if (!config.checkpointFolder.empty()) {
 					if (totalTimesteps / config.tsPerSave > prevTimesteps / config.tsPerSave) {

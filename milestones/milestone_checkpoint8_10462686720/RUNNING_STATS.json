@@ -1,0 +1,10 @@
+{
+    "return_stat": {
+        "count": 14869200,
+        "mean": 232.04345692271323,
+        "var": 164627566421.9479
+    },
+    "run_id": "mfprvdiv",
+    "total_iterations": 99128,
+    "total_timesteps": 10462686720
+}

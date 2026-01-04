@@ -59,6 +59,8 @@ namespace GGL {
 		std::string metricsProjectName = "gigalearncpp"; // Project name for the python metrics receiver
 		std::string metricsGroupName = "unnamed-runs"; // Group name for the python metrics receiver
 		std::string metricsRunName = "gigalearncpp-run"; // Run name for the python metrics receiver
+		bool resumeWandbRun = false; // If true, resume same wandb run from checkpoint (continuous graphs)
+		                             // If false, start new wandb run each time (separate experiments)
 
 		bool savePolicyVersions = false;
 		int64_t tsPerVersion = 25'000'000;

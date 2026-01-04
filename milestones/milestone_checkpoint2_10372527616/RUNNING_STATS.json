@@ -1,0 +1,10 @@
+{
+    "return_stat": {
+        "count": 14784150,
+        "mean": 230.95354969790316,
+        "var": 159924288877.74088
+    },
+    "run_id": "sdim3jrj",
+    "total_iterations": 98561,
+    "total_timesteps": 10372527616
+}

@@ -38,6 +38,14 @@ namespace GGL {
 
 		StepCallbackFn stepCallback = NULL;
 
+		// Time series data for graph export
+		struct MetricSnapshot {
+			uint64_t iteration;
+			uint64_t timesteps;
+			std::unordered_map<std::string, double> metrics;
+		};
+		std::vector<MetricSnapshot> metricHistory; // Stores metrics over time for graph data
+
 		Learner(RLGC::EnvCreateFn envCreateFunc, LearnerConfig config, StepCallbackFn stepCallback = NULL);
 		void Start();
 
