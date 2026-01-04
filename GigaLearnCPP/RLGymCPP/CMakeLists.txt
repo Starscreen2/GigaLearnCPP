@@ -4,6 +4,9 @@ project("RLGymCPP")
 
 # Add all headers and code files
 file(GLOB_RECURSE FILES_SRC "src/*.cpp" "src/*.h")
+# Explicitly ensure AdvancedObsPadded is included (in case GLOB cache misses it)
+list(APPEND FILES_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/RLGymCPP/ObsBuilders/AdvancedObsPadded.cpp")
+list(APPEND FILES_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/RLGymCPP/ObsBuilders/AdvancedObsPadded.h")
 add_library(RLGymCPP STATIC ${FILES_SRC})
 target_include_directories(RLGymCPP PUBLIC "src/")
 

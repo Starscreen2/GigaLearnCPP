@@ -140,12 +140,16 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 	if (!config.checkpointFolder.empty())
 		Load();
 
-	// Only clear runID if we want to force a new wandb run
-	// If resumeWandbRun is true, keep the runID from checkpoint to resume the same run
+	// Always start a new wandb run unless explicitly resuming
+	// If resumeWandbRun is false, clear runID to force a new run (separate experiments)
+	// If resumeWandbRun is true, keep the runID from checkpoint to resume the same run (continuous graphs)
 	if (!config.resumeWandbRun) {
-		runID.clear(); // Force new wandb run (separate experiments)
+		runID.clear(); // Force new wandb run - always start fresh
+		RG_LOG("\tStarting NEW wandb run (resumeWandbRun = false)");
+	} else {
+		if (!runID.empty())
+			RG_LOG("\tResuming wandb run with ID: " << runID);
 	}
-	// Otherwise, runID is kept from checkpoint to resume the same wandb run (continuous graphs)
 
 	if (config.savePolicyVersions && !config.renderMode) {
 		if (config.checkpointFolder.empty())
@@ -868,6 +872,12 @@ void GGL::Learner::Start() {
 				Timer learnTimer = {};
 				ppo->Learn(experience, report, isFirstIteration);
 				report["PPO Learn Time"] = learnTimer.Elapsed();
+				
+				// Free CUDA cache again after learning to prevent memory accumulation
+#ifdef RG_CUDA_SUPPORT
+				if (ppo->device.is_cuda())
+					c10::cuda::CUDACachingAllocator::emptyCache();
+#endif
 
 				// Set metrics
 				float consumptionTime = consumptionTimer.Elapsed();
@@ -929,9 +939,10 @@ void GGL::Learner::Start() {
 				
 				metricHistory.push_back(snapshot);
 				
-				// Limit history size to prevent excessive memory usage (keep last 10,000 snapshots)
-				if (metricHistory.size() > 10000) {
-					metricHistory.erase(metricHistory.begin(), metricHistory.begin() + (metricHistory.size() - 10000));
+				// Limit history size to prevent excessive memory usage (keep last 5,000 snapshots)
+				// Reduced from 10,000 to 5,000 to prevent memory issues during very long training sessions
+				if (metricHistory.size() > 5000) {
+					metricHistory.erase(metricHistory.begin(), metricHistory.begin() + (metricHistory.size() - 5000));
 				}
 			}
 

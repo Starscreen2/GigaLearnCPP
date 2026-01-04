@@ -37,7 +37,20 @@ void GGL::MetricSender::Send(const Report& report) {
 	try {
 		pyMod.attr("add_metrics")(reportDict);
 	} catch (std::exception& e) {
-		RG_ERR_CLOSE("MetricSender: Failed to add metrics, exception: " << e.what());
+		// Don't crash training if wandb/metrics fail - just log warning and continue
+		// This allows training to continue even if network connection is lost
+		static int failureCount = 0;
+		failureCount++;
+		if (failureCount <= 5) {
+			// Log first few failures with details
+			RG_LOG("WARNING: MetricSender failed to send metrics (attempt " << failureCount << "): " << e.what());
+			RG_LOG("         Training will continue, but metrics may not be logged to wandb.");
+		} else if (failureCount == 6) {
+			// After 5 failures, stop spamming logs
+			RG_LOG("WARNING: MetricSender has failed " << failureCount << " times. Suppressing further warnings.");
+			RG_LOG("         Training continues, but metrics are not being logged to wandb.");
+		}
+		// Continue training even if metrics fail
 	}
 }
 

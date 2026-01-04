@@ -6,6 +6,7 @@
 #include <RLGymCPP/TerminalConditions/GoalScoreCondition.h>
 #include <RLGymCPP/OBSBuilders/DefaultObs.h>
 #include <RLGymCPP/OBSBuilders/AdvancedObs.h>
+#include <RLGymCPP/OBSBuilders/AdvancedObsPadded.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
 #include <RLGymCPP/StateSetters/RandomState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
@@ -53,7 +54,9 @@ EnvCreateResult EnvCreateFunc(int index) {
 	};
 
 	// Make the arena
-	int playersPerTeam = 2;  // 2v2 training
+	// You can change playersPerTeam to train for different team sizes (1v1, 2v2, 3v3)
+	// The AdvancedObsPadded will handle padding so the observation size stays consistent
+	int playersPerTeam = 1;  // 1v1 training (change to 2 for 2v2, 3 for 3v3)
 	auto arena = Arena::Create(GameMode::SOCCAR);
 	for (int i = 0; i < playersPerTeam; i++) {
 		arena->AddCar(Team::BLUE);
@@ -62,7 +65,9 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 	EnvCreateResult result = {};
 	result.actionParser = new DefaultAction();
-	result.obsBuilder = new AdvancedObs();
+	// Use AdvancedObsPadded with maxPlayers=3 to support 1v1, 2v2, and 3v3
+	// maxPlayers=3 means: up to 2 teammates (for 3v3) and 3 opponents
+	result.obsBuilder = new AdvancedObsPadded(3);
 	result.stateSetter = new KickoffState();
 	result.terminalConditions = terminalConditions;
 	result.rewards = rewards;
@@ -166,17 +171,18 @@ int main(int argc, char* argv[]) {
 	// Number of parallel game instances
 	// More games = faster training but more RAM usage
 	// 128 for 16GB RAM, 256 for 32GB RAM, 512-1024 for 64GB RAM
-	cfg.numGames = 512;  // Reduced from 1024 for 2v2 (4 players per arena = ~2x memory per arena)
+	// Reduced to 256 for long training sessions to prevent memory issues
+	cfg.numGames = 256;  // Reduced from 512 to prevent "bad allocation" errors during long training
 
 	// Leave this empty to use a random seed each run
 	// The random seed can have a strong effect on the outcome of a run
 	cfg.randomSeed = 123;
 
 	// Timesteps per iteration - stable configuration
-	int tsPerItr = 150'000;  // Stable value that works well
+	int tsPerItr = 100'000;  // Stable value that works well
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 150'000; // Stable value for GPU utilization
+	cfg.ppo.miniBatchSize = 100'000; // Stable value for GPU utilization
 
 	// Using 2 epochs seems pretty optimal when comparing time training to skill
 	// Perhaps 1 or 3 is better for you, test and find out!
