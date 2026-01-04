@@ -53,7 +53,7 @@ EnvCreateResult EnvCreateFunc(int index) {
 	};
 
 	// Make the arena
-	int playersPerTeam = 2;  // 2v2 training
+	int playersPerTeam = 1;  // 1v1 training
 	auto arena = Arena::Create(GameMode::SOCCAR);
 	for (int i = 0; i < playersPerTeam; i++) {
 		arena->AddCar(Team::BLUE);
@@ -166,7 +166,7 @@ int main(int argc, char* argv[]) {
 	// Number of parallel game instances
 	// More games = faster training but more RAM usage
 	// 128 for 16GB RAM, 256 for 32GB RAM, 512-1024 for 64GB RAM
-	cfg.numGames = 512;  // Reduced from 1024 for 2v2 (4 players per arena = ~2x memory per arena)
+	cfg.numGames = 1024;  // Stable value that works well with 64GB RAM for 1v1 training
 
 	// Leave this empty to use a random seed each run
 	// The random seed can have a strong effect on the outcome of a run
