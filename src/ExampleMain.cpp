@@ -4,13 +4,12 @@
 #include <RLGymCPP/Rewards/ZeroSumReward.h>
 #include <RLGymCPP/TerminalConditions/NoTouchCondition.h>
 #include <RLGymCPP/TerminalConditions/GoalScoreCondition.h>
-#include <RLGymCPP/OBSBuilders/DefaultObs.h>
 #include <RLGymCPP/OBSBuilders/AdvancedObs.h>
 #include <RLGymCPP/OBSBuilders/AdvancedObsPadded.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
-#include <RLGymCPP/StateSetters/RandomState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
-#include "CustomRewards.h"
+// Removed CustomRewards.h - using basic rewards from GitHub repo instead
+#include <filesystem>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
@@ -20,32 +19,28 @@ using namespace RLGC; // RLGymCPP
 
 // Create the RLGymCPP environment for each of our games
 EnvCreateResult EnvCreateFunc(int index) {
-	// Enhanced aerial-focused rewards with sustained control multipliers and scoring bonuses
+	// Basic rewards from GitHub repo - proven to produce a scoring bot in ~100m steps
 	std::vector<WeightedReward> rewards = {
 
-		// Movement (aerial touches with time-based multipliers)
-		{ new AerialTouchReward(0.5f), 10.0f },  // INCREASED from 3.0f - incentivize aerial touches more
-		{ new AerialProximityReward(1000.0f, 200.0f), 2.0f },  // NEW: Reward being in air AND close to ball (prevents aimless flying)
+		// Movement
+		{ new AirReward(), 0.25f },
 
 		// Player-ball
-		{ new FaceBallReward(), 0.5f },  // Increased from 0.25f
-		{ new VelocityPlayerToBallReward(), 6.f },  // Increased from 4.f
-		{ new StrongTouchReward(30, 150), 120 },  // INCREASED from 80 - make powerful touches more rewarding
-		{ new TouchAccelReward(), 60 },  // INCREASED from 40 - reward powerful aerial touches more
+		{ new FaceBallReward(), 0.25f },
+		{ new VelocityPlayerToBallReward(), 4.f },
+		{ new StrongTouchReward(20, 100), 60 },
 
 		// Ball-goal
-		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 3.0f },  // Increased from 2.0f
-		{ new ShotReward(), 60 },  // Reward aerial shots
+		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 2.0f },
 
-		// Boost (critical for aerials)
-		{ new PickupBoostReward(), 15.f },  // Increased from 10.f
-		{ new SaveBoostReward(), 0.5f },  // Increased from 0.2f
+		// Boost
+		{ new PickupBoostReward(), 10.f },
+		{ new SaveBoostReward(), 0.2f },
 
 		// Game events
 		{ new ZeroSumReward(new BumpReward(), 0.5f), 20 },
 		{ new ZeroSumReward(new DemoReward(), 0.5f), 80 },
-		{ new GoalReward(), 250 },  // INCREASED from 150 - higher scoring reward
-		{ new SustainedAerialGoalReward(2.0f, 4.0f), 100 }  // Bonus for scoring after 2-4s of sustained aerial control
+		{ new GoalReward(), 150 }
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -102,31 +97,10 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 
 				// Boost metrics
 				report.AddAvg("Player/Boost", player.boost);
-				
-				// Aerial-specific metrics
-				if (!player.isOnGround) {
-					report.AddAvg("Player/Air Time", 1.0f); // Track time in air
-					if (player.ballTouchedStep) {
-						report.AddAvg("Player/Aerial Touch Ratio", 1.0f); // Touch while in air
-					} else {
-						report.AddAvg("Player/Aerial Touch Ratio", 0.0f);
-					}
-				} else {
-					report.AddAvg("Player/Air Time", 0.0f);
-					report.AddAvg("Player/Aerial Touch Ratio", 0.0f);
-				}
 
 				// Touch metrics
-				if (player.ballTouchedStep) {
+				if (player.ballTouchedStep)
 					report.AddAvg("Player/Touch Height", state.ball.pos.z);
-					
-					// Calculate touch force if we have previous state
-					if (state.prev) {
-						Vec ballVelChange = state.ball.vel - state.prev->ball.vel;
-						float touchForce = ballVelChange.Length();
-						report.AddAvg("Player/Average Touch Force", touchForce);
-					}
-				}
 			}
 		}
 
@@ -153,8 +127,13 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 
 int main(int argc, char* argv[]) {
 	// Initialize RocketSim with collision meshes
-	// Path to the collision_meshes folder in your project directory
-	RocketSim::Init("C:\\Users\\thark\\OneDrive\\Desktop\\GitHubStuff\\GigaLearnCPP\\collision_meshes");
+	// Try relative path first, then absolute fallback (more portable)
+	std::filesystem::path collisionPath = "collision_meshes";
+	if (!std::filesystem::exists(collisionPath)) {
+		// Fallback to absolute path if relative doesn't work
+		collisionPath = "C:\\Users\\thark\\OneDrive\\Desktop\\GitHubStuff\\GigaLearnCPP\\collision_meshes";
+	}
+	RocketSim::Init(collisionPath);
 
 	// Make configuration for the learner
 	LearnerConfig cfg = {};
@@ -179,10 +158,10 @@ int main(int argc, char* argv[]) {
 	cfg.randomSeed = 123;
 
 	// Timesteps per iteration - stable configuration
-	int tsPerItr = 100'000;  // Stable value that works well
+	int tsPerItr = 50'000;  // Stable value that works well
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 100'000; // Stable value for GPU utilization
+	cfg.ppo.miniBatchSize = 50'000; // Stable value for GPU utilization
 
 	// Using 2 epochs seems pretty optimal when comparing time training to skill
 	// Perhaps 1 or 3 is better for you, test and find out!
@@ -220,27 +199,24 @@ int main(int argc, char* argv[]) {
 	cfg.ppo.sharedHead.addLayerNorm = addLayerNorm;
 
 	cfg.sendMetrics = true; // Send metrics
-	cfg.metricsProjectName = "gigalearncpp-aerial"; // More descriptive project name
-	cfg.metricsGroupName = "aerial-focused-training"; // Group for this training run
+	cfg.metricsProjectName = "gigalearncpp"; // Project name
+	cfg.metricsGroupName = "basic-rewards"; // Group for this training run
 	
-	// Wandb run behavior:
-	// - resumeWandbRun = false: Start new run each time (separate experiments, graphs reset)
-	// - resumeWandbRun = true: Resume same run from checkpoint (continuous graphs)
 	cfg.resumeWandbRun = false; // Set to true for continuous graphs across training sessions
 	
 	if (cfg.resumeWandbRun) {
 		// Use fixed run name when resuming (will resume the same run)
-		cfg.metricsRunName = "aerial-bot-continuous";
+		cfg.metricsRunName = "basic-bot-continuous";
 	} else {
 		// Generate unique run name with timestamp for new runs
 		auto now = std::chrono::system_clock::now();
 		auto time_t = std::chrono::system_clock::to_time_t(now);
 		std::stringstream ss;
-		ss << "aerial-bot-" << std::put_time(std::localtime(&time_t), "%Y%m%d-%H%M%S");
+		ss << "basic-bot-" << std::put_time(std::localtime(&time_t), "%Y%m%d-%H%M%S");
 		cfg.metricsRunName = ss.str(); // Unique run name with timestamp
 	}
 	
-	cfg.renderMode = false; // Don't render
+	cfg.renderMode = false;
 
 	// Checkpoint saving: Save every 150 iterations
 	// With 150,000 timesteps per iteration, this saves every 22,500,000 timesteps
