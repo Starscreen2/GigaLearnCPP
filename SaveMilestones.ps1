@@ -39,31 +39,31 @@ while ($true) {
         if ($checkpoints.Count -gt 0) {
             # Count checkpoints sequentially (1st, 2nd, 3rd, etc.)
             $checkpointIndex = 0
-            foreach ($checkpoint in $checkpoints) {
+        foreach ($checkpoint in $checkpoints) {
                 $checkpointIndex++
-                $timesteps = [long]$checkpoint.Name
-                
+            $timesteps = [long]$checkpoint.Name
+            
                 # Check if this is a milestone (every Nth checkpoint)
                 if (($checkpointIndex % $milestoneInterval) -eq 0 -and -not $savedMilestones.ContainsKey($checkpoint.Name)) {
                     $milestoneName = "milestone_checkpoint${checkpointIndex}_${timesteps}"
-                    $milestonePath = Join-Path $milestonesPath $milestoneName
-                    
+                $milestonePath = Join-Path $milestonesPath $milestoneName
+                
                     $timestamp = Get-Date -Format 'HH:mm:ss'
                     Write-Host "[$timestamp] Saving MILESTONE #${checkpointIndex}: $milestoneName ($timesteps timesteps)" -ForegroundColor Green
+                
+                try {
+                    Copy-Item -Path $checkpoint.FullName -Destination $milestonePath -Recurse -Force
                     
-                    try {
-                        Copy-Item -Path $checkpoint.FullName -Destination $milestonePath -Recurse -Force
-                        
-                        # Mark as saved
-                        $savedMilestones[$checkpoint.Name] = $true
-                        Add-Content -Path "$milestonesPath\.saved_list.txt" -Value $checkpoint.Name
-                        
+                    # Mark as saved
+                    $savedMilestones[$checkpoint.Name] = $true
+                    Add-Content -Path "$milestonesPath\.saved_list.txt" -Value $checkpoint.Name
+                    
                         Write-Host "  [OK] Milestone saved successfully to: $milestonePath" -ForegroundColor Green
-                    } catch {
+                } catch {
                         Write-Host "  [ERROR] Error saving milestone: $_" -ForegroundColor Red
-                    }
                 }
             }
+        }
         }
     } else {
         $timestamp = Get-Date -Format 'HH:mm:ss'

@@ -1,6 +1,7 @@
 #include "RLBotClient.h"
 
 #include <RLGymCPP/OBSBuilders/AdvancedObs.h>
+#include <RLGymCPP/OBSBuilders/AdvancedObsPadded.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
 #include <RLGymCPP/Gamestates/GameState.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
@@ -74,14 +75,17 @@ int main(int argc, char* argv[]) {
 	std::cout << "Full path: " << std::filesystem::absolute(checkpointPath) << std::endl;
 
 	// Create the observation builder and action parser (must match your training setup!)
-	AdvancedObs* obsBuilder = new AdvancedObs();
+	// Use AdvancedObsPadded to support variable player counts (1v1, 2v2, etc.)
+	// NOTE: This requires a checkpoint trained with AdvancedObsPadded(3) in ExampleMain.cpp
+	AdvancedObsPadded* obsBuilder = new AdvancedObsPadded(3);
 	DefaultAction* actionParser = new DefaultAction();
 
 	// Get observation size by creating a proper Arena and GameState (must match training setup!)
 	// This matches exactly how the training code determines observation size
+	// Using 1v1 setup, but AdvancedObsPadded will pad to the same size as 2v2
 	auto arena = Arena::Create(GameMode::SOCCAR);
 	arena->AddCar(Team::BLUE);
-	arena->AddCar(Team::ORANGE);  // 1v1 setup matching training
+	arena->AddCar(Team::ORANGE);  // 1v1 setup - padding will make it work for 2v2 too
 	
 	KickoffState* stateSetter = new KickoffState();
 	stateSetter->ResetArena(arena);

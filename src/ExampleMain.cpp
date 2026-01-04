@@ -6,9 +6,11 @@
 #include <RLGymCPP/TerminalConditions/GoalScoreCondition.h>
 #include <RLGymCPP/OBSBuilders/DefaultObs.h>
 #include <RLGymCPP/OBSBuilders/AdvancedObs.h>
+#include <RLGymCPP/OBSBuilders/AdvancedObsPadded.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
 #include <RLGymCPP/StateSetters/RandomState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
+#include <RLGymCPP/CommonValues.h>
 #include "CustomRewards.h"
 #include <chrono>
 #include <sstream>
@@ -19,32 +21,35 @@ using namespace RLGC; // RLGymCPP
 
 // Create the RLGymCPP environment for each of our games
 EnvCreateResult EnvCreateFunc(int index) {
-	// Enhanced aerial-focused rewards with sustained control multipliers and scoring bonuses
+	// Dribble-to-airdribble focused rewards: get ball on car, double jump, multi-touch airdribble facing goal
 	std::vector<WeightedReward> rewards = {
 
-		// Movement (aerial touches with time-based multipliers)
-		{ new AerialTouchReward(0.5f), 10.0f },  // INCREASED from 3.0f - incentivize aerial touches more
-		{ new AerialProximityReward(1000.0f, 200.0f), 2.0f },  // NEW: Reward being in air AND close to ball (prevents aimless flying)
+		// Dribble-focused rewards (NEW)
+		{ new DribbleReward(100.0f, 150.0f, 0.5f), 20.0f },  // Ball on car (ground/wall): height threshold, distance threshold, interval
+		{ new DoubleJumpAirdribbleReward(1.5f), 60.0f },  // Double jump during dribble: time window
+		{ new MultiTouchAirdribbleReward(200.0f), 30.0f },  // Multi-touch airdribble facing goal: max distance
 
-		// Player-ball
-		{ new FaceBallReward(), 0.5f },  // Increased from 0.25f
-		{ new VelocityPlayerToBallReward(), 6.f },  // Increased from 4.f
-		{ new StrongTouchReward(30, 150), 120 },  // INCREASED from 80 - make powerful touches more rewarding
-		{ new TouchAccelReward(), 60 },  // INCREASED from 40 - reward powerful aerial touches more
+		// General aerial play (reduced)
+		{ new AerialTouchReward(0.5f), 2.0f },  // Reduced from 10.0f - keep minimal for general aerial play
+
+		// Player-ball (helpful for initial approach)
+		{ new FaceBallReward(), 0.5f },  // Keep for positioning
+		{ new VelocityPlayerToBallReward(), 6.0f },  // Keep for initial ball approach
+		{ new StrongTouchReward(30, 150), 40 },  // Reduced from 120 - less focus on powerful hits, more on control
+		{ new TouchAccelReward(), 20 },  // Reduced from 60 - less focus on power
 
 		// Ball-goal
-		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 3.0f },  // Increased from 2.0f
-		{ new ShotReward(), 60 },  // Reward aerial shots
+		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 3.0f },  // Keep for general goal orientation
+		{ new ShotReward(), 60 },  // Keep - airdribbles often lead to shots
 
-		// Boost (critical for aerials)
-		{ new PickupBoostReward(), 15.f },  // Increased from 10.f
-		{ new SaveBoostReward(), 0.5f },  // Increased from 0.2f
+		// Boost (critical for airdribbles)
+		{ new PickupBoostReward(), 15.f },  // Keep - critical for airdribbles
+		{ new SaveBoostReward(), 0.5f },  // Keep
 
 		// Game events
 		{ new ZeroSumReward(new BumpReward(), 0.5f), 20 },
 		{ new ZeroSumReward(new DemoReward(), 0.5f), 80 },
-		{ new GoalReward(), 250 },  // INCREASED from 150 - higher scoring reward
-		{ new SustainedAerialGoalReward(2.0f, 4.0f), 100 }  // Bonus for scoring after 2-4s of sustained aerial control
+		{ new GoalReward(), 250 },  // Keep - still important
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -62,7 +67,10 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 	EnvCreateResult result = {};
 	result.actionParser = new DefaultAction();
-	result.obsBuilder = new AdvancedObs();
+	// Use AdvancedObsPadded to support both 1v1 and 2v2 with the same model
+	// maxPlayers = 3 means: up to 2 teammates (for 3v3) and 3 opponents
+	// For 1v1: pads to 2 opponents, for 2v2: 1 teammate + 2 opponents (all filled)
+	result.obsBuilder = new AdvancedObsPadded(3);
 	result.stateSetter = new KickoffState();
 	result.terminalConditions = terminalConditions;
 	result.rewards = rewards;
@@ -97,7 +105,7 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 
 				// Boost metrics
 				report.AddAvg("Player/Boost", player.boost);
-				
+
 				// Aerial-specific metrics
 				if (!player.isOnGround) {
 					report.AddAvg("Player/Air Time", 1.0f); // Track time in air
@@ -109,6 +117,39 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 				} else {
 					report.AddAvg("Player/Air Time", 0.0f);
 					report.AddAvg("Player/Aerial Touch Ratio", 0.0f);
+				}
+
+				// Dribble metrics (NEW)
+				Vec carToBall = state.ball.pos - player.pos;
+				Vec localCarToBall = player.rotMat.Dot(carToBall);
+				bool isDribbling = (localCarToBall.z > 100.0f) && (carToBall.Length() < 150.0f);
+				if (isDribbling) {
+					report.AddAvg("Player/Dribble Time", 1.0f);
+					// Check if on wall (car not upright)
+					bool isOnWall = player.isOnGround && (player.rotMat.up.z < 0.7f);
+					if (isOnWall) {
+						report.AddAvg("Player/Wall Dribble Time", 1.0f);
+					} else {
+						report.AddAvg("Player/Wall Dribble Time", 0.0f);
+					}
+				} else {
+					report.AddAvg("Player/Dribble Time", 0.0f);
+					report.AddAvg("Player/Wall Dribble Time", 0.0f);
+				}
+
+				// Airdribble metrics (NEW)
+				if (!player.isOnGround && player.hasDoubleJumped) {
+					float distToBall = carToBall.Length();
+					bool ballClose = distToBall < 200.0f;
+					bool ballAbove = (state.ball.pos.z > player.pos.z - 50.0f);
+					if (ballClose && ballAbove) {
+						// Check goal-facing alignment
+						Vec targetGoal = (player.team == Team::BLUE) ? 
+							CommonValues::ORANGE_GOAL_BACK : CommonValues::BLUE_GOAL_BACK;
+						Vec dirToGoal = (targetGoal - player.pos).Normalized();
+						float goalAlignment = player.rotMat.forward.Dot(dirToGoal);
+						report.AddAvg("Player/Airdribble Goal Alignment", goalAlignment);
+					}
 				}
 
 				// Touch metrics
