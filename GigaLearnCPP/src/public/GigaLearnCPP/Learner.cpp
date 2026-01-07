@@ -1147,8 +1147,8 @@ void GGL::Learner::Start() {
 				totalIterations++;
 				report["Total Iterations"] = totalIterations;
 
-			if (versionMgr)
-				versionMgr->OnIteration(ppo, report, totalTimesteps, prevTimesteps);
+				if (versionMgr)
+					versionMgr->OnIteration(ppo, report, totalTimesteps, prevTimesteps);
 
 			// Store metrics periodically for time series data (every 100 iterations or at checkpoints)
 			// This allows plotting graphs from the summary data
@@ -1201,7 +1201,7 @@ void GGL::Learner::Start() {
 			}
 
 			// Finish report early if quitting to ensure all metrics are finalized
-			if (saveQueued) {
+				if (saveQueued) {
 				report.Finish();
 				
 				// Store final snapshot
@@ -1262,10 +1262,10 @@ void GGL::Learner::Start() {
 				RG_LOG("  JSON: " << summaryPath << ".json");
 				RG_LOG("  Text: " << summaryPath << ".txt");
 				
-				if (!config.checkpointFolder.empty())
-					Save();
-				exit(0);
-			}
+					if (!config.checkpointFolder.empty())
+						Save();
+					exit(0);
+				}
 
 				if (!config.checkpointFolder.empty()) {
 					if (totalTimesteps / config.tsPerSave > prevTimesteps / config.tsPerSave) {
@@ -1274,15 +1274,15 @@ void GGL::Learner::Start() {
 					}
 				}
 
-			report.Finish();
+				report.Finish();
 
 			// Log timestamp for freeze detection (every 10 iterations to keep file size manageable)
 			if (totalIterations % 10 == 0) {
 				LogTimestamp(report);
 			}
 
-			if (metricSender)
-				metricSender->Send(report);
+				if (metricSender)
+					metricSender->Send(report);
 
 				report.Display(
 					{

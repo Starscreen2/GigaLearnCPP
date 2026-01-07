@@ -238,7 +238,7 @@ namespace RLGC {
 					// Aerial bonus (in air = extra reward)
 					float aerialBonus = (!player.isOnGround) ? 0.5f : 0.0f;
 					
-					// Direction toward goal bonus
+					// Direction toward goal bonus - STRONG CHECK: only reward if on target
 					Vec targetGoal = (player.team == Team::BLUE) ? 
 						CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
 					Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
@@ -247,11 +247,36 @@ namespace RLGC {
 					if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
 						Vec ballVelDir = state.ball.vel.Normalized();
 						float goalAlignment = ballVelDir.Dot(dirToGoal);
+						
+						// CRITICAL: Only reward if ball is actually heading toward goal (on target)
+						if (goalAlignment < 0.5f) {
+							// Ball is not on target - return 0 to prevent mindless double touches
+							touchInfo.hasFirstTouch = false;
+							touchInfo.time = 0.0f;
+							return 0;
+						}
+						
 						float directionBonus = RS_MAX(0.0f, goalAlignment) * 0.3f; // Up to 0.3 bonus
+						
+						// Check if ball is heading toward own goal (dangerous)
+						Vec ownGoal = (player.team == Team::BLUE) ? 
+							CommonValues::BLUE_GOAL_CENTER : CommonValues::ORANGE_GOAL_CENTER;
+						Vec dirToOwnGoal = (ownGoal - state.ball.pos).Normalized();
+						float ownGoalAlignment = ballVelDir.Dot(dirToOwnGoal);
+						
+						if (ownGoalAlignment > 0.3f) {
+							// Ball heading toward own goal - punish this
+							touchInfo.hasFirstTouch = false;
+							touchInfo.time = 0.0f;
+							return -0.2f; // Small punishment
+						}
 						
 						reward = baseReward + (heightScore * 0.8f) + aerialBonus + directionBonus;
 					} else {
-						reward = baseReward + (heightScore * 0.8f) + aerialBonus;
+						// No velocity or goal direction - not on target
+						touchInfo.hasFirstTouch = false;
+						touchInfo.time = 0.0f;
+						return 0;
 					}
 					
 					// Time bonus (faster follow-up = more reward, but not too fast)
@@ -445,6 +470,15 @@ namespace RLGC {
 					    timeSinceFirstTouch <= maxTimeBetweenTouches &&
 					    timeSinceWall <= 2.0f) {
 						
+						// REMOVED: Own backwall double touches (keep clears, remove double touch rewards)
+						if (touchInfo.lastWallHit == OWN_BACKWALL) {
+							touchInfo.hasFirstTouch = false;
+							touchInfo.time = 0.0f;
+							touchInfo.lastWallHit = NONE;
+							touchInfo.timeSinceWallHit = 0.0f;
+							return 0; // No reward for own backwall double touches
+						}
+						
 						float baseReward = 0.0f;
 						float wallMultiplier = 1.0f;
 						
@@ -456,10 +490,6 @@ namespace RLGC {
 							case SIDE_WALL:
 								baseReward = 0.6f;
 								wallMultiplier = 1.2f;
-								break;
-							case OWN_BACKWALL:
-								baseReward = 0.4f;
-								wallMultiplier = 1.0f;
 								break;
 							default:
 								return 0;
@@ -478,10 +508,45 @@ namespace RLGC {
 						Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
 						
 						float directionBonus = 0.0f;
+						
+						// CRITICAL: Only reward if ball is on target toward opponent's goal
 						if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
 							Vec ballVelDir = state.ball.vel.Normalized();
 							float goalAlignment = ballVelDir.Dot(dirToGoal);
+							
+							// Must be heading toward goal (on target)
+							if (goalAlignment < 0.5f) {
+								// Not on target - return 0
+								touchInfo.hasFirstTouch = false;
+								touchInfo.time = 0.0f;
+								touchInfo.lastWallHit = NONE;
+								touchInfo.timeSinceWallHit = 0.0f;
+								return 0;
+							}
+							
+							// Check if ball bounces back toward own goal (dangerous)
+							Vec ownGoal = (player.team == Team::BLUE) ? 
+								CommonValues::BLUE_GOAL_CENTER : CommonValues::ORANGE_GOAL_CENTER;
+							Vec dirToOwnGoal = (ownGoal - state.ball.pos).Normalized();
+							float ownGoalAlignment = ballVelDir.Dot(dirToOwnGoal);
+							
+							if (ownGoalAlignment > 0.3f) {
+								// Ball heading toward own goal - punish
+								touchInfo.hasFirstTouch = false;
+								touchInfo.time = 0.0f;
+								touchInfo.lastWallHit = NONE;
+								touchInfo.timeSinceWallHit = 0.0f;
+								return -0.2f; // Small punishment
+							}
+							
 							directionBonus = RS_MAX(0.0f, goalAlignment) * 0.2f;
+						} else {
+							// No valid velocity or goal direction - not on target
+							touchInfo.hasFirstTouch = false;
+							touchInfo.time = 0.0f;
+							touchInfo.lastWallHit = NONE;
+							touchInfo.timeSinceWallHit = 0.0f;
+							return 0;
 						}
 						
 						float timeScore = 1.0f;
@@ -927,6 +992,601 @@ namespace RLGC {
 			float reward = (heightScore * 0.4f + upwardScore * 0.3f + directionScore * 0.2f + proximityScore * 0.1f) * timeDecay;
 			
 			return reward;
+		}
+	};
+
+	// Rewards collecting big boost pads (100 boost) more than small pads (12 boost)
+	// Encourages bot to go out of its way for big boosts
+	class BigBoostReward : public Reward {
+	public:
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!player.prev)
+				return 0;
+
+			// Detect boost collection
+			if (player.boost > player.prev->boost) {
+				float boostGained = player.boost - player.prev->boost;
+				
+				// Big boost pad gives 100 boost (threshold: >= 90 to account for partial collection)
+				if (boostGained >= 90.0f) {
+					return 2.0f; // 2x multiplier for big boost
+				}
+				// Small boost pad gives 12 boost
+				else if (boostGained >= 10.0f) {
+					return 0.5f; // Normal reward for small boost
+				}
+			}
+			
+			return 0;
+		}
+	};
+
+	// Punishes own goals to prevent bot from scoring on itself
+	class OwnGoalPunishment : public Reward {
+	public:
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!isFinal || !state.goalScored)
+				return 0;
+
+			// Detect own goal: ball in own half when goal scored
+			bool ownGoal = (player.team == RS_TEAM_FROM_Y(state.ball.pos.y));
+			
+			if (ownGoal) {
+				return -5.0f; // Strong punishment for own goals
+			}
+			
+			return 0;
+		}
+	};
+
+	// Main air dribble reward - tracks sustained aerial ball control
+	class AirDribbleReward : public Reward {
+	private:
+		float intervalSeconds;
+		std::unordered_map<int, float> aerialControlTime;
+		std::unordered_map<int, float> lastTouchTime;
+
+	public:
+		AirDribbleReward(float intervalSec = 0.5f) : intervalSeconds(intervalSec) {}
+
+		virtual void Reset(const GameState& initialState) override {
+			aerialControlTime.clear();
+			lastTouchTime.clear();
+			for (const auto& player : initialState.players) {
+				aerialControlTime[player.carId] = 0.0f;
+				lastTouchTime[player.carId] = 0.0f;
+			}
+		}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
+
+			int carId = player.carId;
+			float& controlTime = aerialControlTime[carId];
+
+			bool isInAir = !player.isOnGround;
+			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
+			bool isAerialTouch = isInAir && player.ballTouchedStep;
+
+			if (isInAir && hasBallContact) {
+				controlTime += state.deltaTime;
+				
+				if (isAerialTouch) {
+					// Multiplier increases with duration: 0.0s = 1.0x, 0.5s = 1.5x, 1.0s = 2.0x, etc.
+					float multiplier = 1.0f + (controlTime / intervalSeconds) * 0.5f;
+					lastTouchTime[carId] = controlTime;
+					return multiplier;
+				}
+			} else {
+				controlTime = 0.0f;
+			}
+
+			return 0;
+		}
+	};
+
+	// Rewards boosting toward ball during air dribbles
+	class AirDribbleBoostReward : public Reward {
+	private:
+		float maxDistance; // Maximum distance to consider "near ball"
+		std::unordered_map<int, bool> inAirDribble;
+
+	public:
+		AirDribbleBoostReward(float maxDist = 500.0f) : maxDistance(maxDist) {}
+
+		virtual void Reset(const GameState& initialState) override {
+			inAirDribble.clear();
+			for (const auto& player : initialState.players) {
+				inAirDribble[player.carId] = false;
+			}
+		}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
+
+			int carId = player.carId;
+			bool isInAir = !player.isOnGround;
+			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
+			bool isBoosting = (player.boost > 0 && player.prevAction.boost > 0.5f);
+
+			// Track if in air dribble sequence
+			if (isInAir && hasBallContact) {
+				inAirDribble[carId] = true;
+			} else if (!isInAir || !hasBallContact) {
+				inAirDribble[carId] = false;
+			}
+
+			// Only reward when in air dribble and boosting
+			if (inAirDribble[carId] && isBoosting) {
+				float distToBall = (state.ball.pos - player.pos).Length();
+				
+				if (distToBall < maxDistance) {
+					// Calculate direction to ball
+					Vec dirToBall = (state.ball.pos - player.pos).Normalized();
+					
+					// Check if player velocity aligns with direction to ball
+					if (player.vel.Length() > FLT_EPSILON) {
+						Vec velDir = player.vel.Normalized();
+						float alignment = velDir.Dot(dirToBall);
+						
+						// Reward proportional to alignment (0.0 to 1.0)
+						return RS_MAX(0.0f, alignment) * 0.5f;
+					}
+				}
+			}
+
+			return 0;
+		}
+	};
+
+	// Rewards air rolling during air dribbles
+	class AirRollReward : public Reward {
+	private:
+		float maxDistance;
+
+	public:
+		AirRollReward(float maxDist = 500.0f) : maxDistance(maxDist) {}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!player.prev)
+				return 0;
+
+			// Only reward when in air, near ball, and air rolling
+			if (!player.isOnGround) {
+				float distToBall = (state.ball.pos - player.pos).Length();
+				
+				if (distToBall < maxDistance) {
+					// Check if air rolling (roll input)
+					float rollInput = abs(player.prevAction.roll);
+					
+					if (rollInput > 0.1f) {
+						// Continuous reward while air rolling near ball
+						return rollInput * 0.3f; // Scale by roll intensity
+					}
+				}
+			}
+
+			return 0;
+		}
+	};
+
+	// Low-priority reward for flip resets - use when available, don't seek
+	class FlipResetReward : public Reward {
+	private:
+		std::unordered_map<int, bool> hadFlipReset;
+		std::unordered_map<int, bool> usedFlipReset;
+
+	public:
+		virtual void Reset(const GameState& initialState) override {
+			hadFlipReset.clear();
+			usedFlipReset.clear();
+			for (const auto& player : initialState.players) {
+				hadFlipReset[player.carId] = false;
+				usedFlipReset[player.carId] = false;
+			}
+		}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!player.prev)
+				return 0;
+
+			int carId = player.carId;
+			bool hasFlipReset = player.HasFlipReset();
+			bool prevHadFlipReset = hadFlipReset[carId];
+
+			// Detect when flip reset is obtained
+			if (hasFlipReset && !prevHadFlipReset) {
+				hadFlipReset[carId] = true;
+				// Small reward for obtaining flip reset naturally
+				return 0.3f;
+			}
+
+			// Detect when flip reset is used (flip while having reset)
+			if (prevHadFlipReset && !hasFlipReset && !player.isOnGround) {
+				usedFlipReset[carId] = true;
+				hadFlipReset[carId] = false;
+				
+				// Check if flip was used toward ball/goal
+				Vec dirToBall = (state.ball.pos - player.pos).Normalized();
+				if (player.vel.Length() > FLT_EPSILON) {
+					Vec velDir = player.vel.Normalized();
+					float alignment = velDir.Dot(dirToBall);
+					
+					if (alignment > 0.3f) {
+						// Flip reset used effectively
+						return 0.5f;
+					}
+				}
+				
+				return 0.2f; // Small reward for using flip reset
+			}
+
+			hadFlipReset[carId] = hasFlipReset;
+			return 0;
+		}
+	};
+
+	// Rewards first touch that starts an air dribble
+	class AirDribbleStartReward : public Reward {
+	private:
+		float minDistanceFromGoal;
+
+	public:
+		AirDribbleStartReward(float minDistFromGoal = 3000.0f) : minDistanceFromGoal(minDistFromGoal) {}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
+
+			// Check if this is a new aerial touch (starts air dribble)
+			if (!player.isOnGround && player.ballTouchedStep) {
+				float baseReward = 0.3f;
+				
+				// Bonus if player has boost
+				if (player.boost > 30.0f) {
+					baseReward += 0.2f;
+				}
+				
+				// Bonus based on distance from goal (further = better)
+				Vec targetGoal = (player.team == Team::BLUE) ? 
+					CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
+				float distFromGoal = (player.pos - targetGoal).Length();
+				
+				if (distFromGoal > minDistanceFromGoal) {
+					float distanceBonus = (distFromGoal - minDistanceFromGoal) / 5000.0f;
+					baseReward += RS_MIN(0.5f, distanceBonus); // Cap at 0.5 bonus
+				}
+				
+				return baseReward;
+			}
+
+			return 0;
+		}
+	};
+
+	// Rewards air dribbles based on distance traveled (further = better)
+	class AirDribbleDistanceReward : public Reward {
+	private:
+		float maxTimeWindow;
+		std::unordered_map<int, Vec> startPos;
+		std::unordered_map<int, float> startTime;
+		std::unordered_map<int, bool> inAirDribble;
+
+	public:
+		AirDribbleDistanceReward(float maxTime = 3.0f) : maxTimeWindow(maxTime) {}
+
+		virtual void Reset(const GameState& initialState) override {
+			startPos.clear();
+			startTime.clear();
+			inAirDribble.clear();
+			for (const auto& player : initialState.players) {
+				startPos[player.carId] = Vec();
+				startTime[player.carId] = 0.0f;
+				inAirDribble[player.carId] = false;
+			}
+		}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
+
+			int carId = player.carId;
+			bool isInAir = !player.isOnGround;
+			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
+
+			// Track air dribble start
+			if (isInAir && hasBallContact && !inAirDribble[carId]) {
+				inAirDribble[carId] = true;
+				startPos[carId] = player.pos;
+				startTime[carId] = 0.0f;
+			}
+
+			// Update time
+			if (inAirDribble[carId]) {
+				startTime[carId] += state.deltaTime;
+				
+				// Reset if too much time passed or lost contact
+				if (startTime[carId] > maxTimeWindow || (!isInAir && !hasBallContact)) {
+					inAirDribble[carId] = false;
+					startTime[carId] = 0.0f;
+				}
+			}
+
+			// Reward on goal scored from air dribble
+			if (state.goalScored && inAirDribble[carId]) {
+				bool scored = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
+				
+				if (scored && startTime[carId] <= maxTimeWindow) {
+					float distance = (player.pos - startPos[carId]).Length();
+					float baseReward = 1.0f;
+					
+					// Scale reward by distance (capped at 3.0x)
+					float distanceMultiplier = RS_MIN(3.0f, 1.0f + (distance / 2000.0f));
+					
+					inAirDribble[carId] = false;
+					startTime[carId] = 0.0f;
+					
+					return baseReward * distanceMultiplier;
+				}
+			}
+
+			return 0;
+		}
+	};
+
+	// Detects truly open nets (guaranteed unsaveable) and rewards taking shots
+	// Only rewards when ball is GUARANTEED to go in, not just "probably"
+	// Also punishes giving the ball away to opponents (counter-attack risk)
+	class OpenNetReward : public Reward {
+	private:
+		float defenderDetectionRadius;
+		float minBallSpeedForUnsaveable;
+		constexpr static float GOAL_THRESHOLD_Y = 5120.0f; // BACK_WALL_Y
+		constexpr static float GOAL_HALF_WIDTH = 892.755f;
+		constexpr static float GOAL_HEIGHT = 642.775f;
+		constexpr static float GRAVITY_Z = -650.0f;
+		
+		// Calculate time for ball to reach goal (matches Arena::IsBallProbablyGoingIn logic)
+		float CalculateTimeToGoal(const Vec& ballPos, const Vec& ballVel) {
+			if (abs(ballVel.y) < FLT_EPSILON) {
+				return 999.0f;
+			}
+			
+			float scoreDirSgn = RS_SGN(ballVel.y);
+			float goalY = GOAL_THRESHOLD_Y * scoreDirSgn;
+			float distToGoal = abs(ballPos.y - goalY);
+			float timeToGoal = distToGoal / abs(ballVel.y);
+			
+			return RS_MIN(timeToGoal, 5.0f);
+		}
+		
+		// Calculate where ball will be at future time (with gravity)
+		Vec CalculateBallPositionAtTime(const Vec& ballPos, const Vec& ballVel, float time) {
+			Vec gravity = Vec(0, 0, GRAVITY_Z);
+			return ballPos + (ballVel * time) + (gravity * time * time * 0.5f);
+		}
+		
+		// Determine which goal ball is heading toward based on velocity
+		Vec GetTargetGoalFromVelocity(const Vec& ballVel) {
+			float scoreDirSgn = RS_SGN(ballVel.y);
+			float goalY = GOAL_THRESHOLD_Y * scoreDirSgn;
+			return Vec(0, goalY, GOAL_HEIGHT / 2);
+		}
+		
+		// Check if ball is GUARANTEED to score (strict requirements)
+		bool IsBallGuaranteedToScore(const Vec& ballPos, const Vec& ballVel) {
+			if (abs(ballVel.y) < FLT_EPSILON) {
+				return false;
+			}
+			
+			float scoreDirSgn = RS_SGN(ballVel.y);
+			float goalY = GOAL_THRESHOLD_Y * scoreDirSgn;
+			float distToGoal = abs(ballPos.y - goalY);
+			float timeToGoal = distToGoal / abs(ballVel.y);
+			
+			// STRICT: Must be close to goal (within 2 seconds)
+			if (timeToGoal > 2.0f) {
+				return false; // Too far away - not guaranteed
+			}
+			
+			// STRICT: Ball must be moving fast enough to be unsaveable
+			if (ballVel.Length() < minBallSpeedForUnsaveable) {
+				return false; // Too slow - can be saved
+			}
+			
+			// Calculate where ball will be (with gravity)
+			Vec extrapPosWhenScore = CalculateBallPositionAtTime(ballPos, ballVel, timeToGoal);
+			
+			// STRICT: Ball must be WELL on target (smaller margin = more certain)
+			float margin = 100.0f; // Reduced from 200 - stricter requirement
+			
+			// Check height - Arena code uses: if (z > GOAL_HEIGHT + margin) reject
+			// So we allow up to GOAL_HEIGHT + margin, reject if above that
+			if (extrapPosWhenScore.z > GOAL_HEIGHT + margin) {
+				return false; // Too high - will hit crossbar
+			}
+			
+			if (extrapPosWhenScore.z < 100.0f) {
+				return false; // Too low - might hit ground
+			}
+			
+			// Check width - Arena code uses: if (abs(x) > GOAL_HALF_WIDTH + margin) reject
+			// So we allow up to GOAL_HALF_WIDTH + margin, reject if beyond that
+			if (abs(extrapPosWhenScore.x) > GOAL_HALF_WIDTH + margin) {
+				return false; // Too far to the side - will hit post
+			}
+			
+			// STRICT: Ball must be heading directly at goal (not just toward it)
+			Vec dirToGoal = (GetTargetGoalFromVelocity(ballVel) - ballPos).Normalized();
+			Vec ballVelDir = ballVel.Normalized();
+			float goalAlignment = ballVelDir.Dot(dirToGoal);
+			
+			if (goalAlignment < 0.85f) {
+				return false; // Not heading directly at goal - might miss
+			}
+			
+			return true;
+		}
+		
+		// Estimate if opponent can intercept/save the ball (conservative - assume they can save unless proven otherwise)
+		bool CanOpponentSave(const Player& player, const GameState& state, float timeToGoal) {
+			Vec ballAtGoal = CalculateBallPositionAtTime(state.ball.pos, state.ball.vel, timeToGoal);
+			Vec targetGoal = GetTargetGoalFromVelocity(state.ball.vel);
+			
+			for (const auto& opponent : state.players) {
+				if (opponent.team == player.team) {
+					continue;
+				}
+				
+				// CONSERVATIVE: Check larger radius - assume opponents can defend from further away
+				float distToGoal = (opponent.pos - targetGoal).Length();
+				
+				if (distToGoal > defenderDetectionRadius * 1.5f) {
+					continue; // Way too far
+				}
+				
+				// Check if opponent is between ball and goal
+				Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
+				Vec dirToOpponent = (opponent.pos - state.ball.pos).Normalized();
+				float alignment = dirToGoal.Dot(dirToOpponent);
+				
+				if (alignment < 0.1f) {
+					continue; // Not between ball and goal
+				}
+				
+				// CONSERVATIVE: Assume opponent can move faster (more generous speed estimate)
+				Vec dirToBallTrajectory = (ballAtGoal - opponent.pos);
+				float distToBallTrajectory = dirToBallTrajectory.Length();
+				
+				float opponentSpeed = opponent.vel.Length();
+				// More generous speed assumption - assume they can boost/aerial
+				float effectiveSpeed = RS_MAX(opponentSpeed, CommonValues::CAR_MAX_SPEED * 0.6f);
+				
+				// Account for aerial saves
+				float heightDiff = abs(ballAtGoal.z - opponent.pos.z);
+				if (heightDiff > 100.0f) {
+					// Even if aerial, assume they can move reasonably fast
+					effectiveSpeed *= 0.8f; // Less penalty for aerial
+				}
+				
+				// Safety check: prevent division by zero
+				if (effectiveSpeed < FLT_EPSILON) {
+					continue; // Opponent not moving - can't save
+				}
+				
+				float timeToReachBall = distToBallTrajectory / effectiveSpeed;
+				
+				// CONSERVATIVE: Less margin needed (assume good players react faster)
+				timeToReachBall += 0.2f; // Reduced from 0.4f
+				
+				// If opponent MIGHT be able to save, assume they can
+				if (timeToReachBall < timeToGoal + 0.1f) { // Added buffer - if close, assume they can save
+					return true; // Opponent can likely save
+				}
+			}
+			
+			return false; // No opponent can save
+		}
+		
+		// Detect if player is giving ball away
+		bool IsGivingBallAway(const Player& player, const GameState& state) {
+			if (!state.prev || !player.ballTouchedStep) {
+				return false;
+			}
+			
+			float ownGoalY = (player.team == Team::BLUE) ? -GOAL_THRESHOLD_Y : GOAL_THRESHOLD_Y;
+			float ballY = state.ball.pos.y;
+			float ballVelY = state.ball.vel.y;
+			
+			float ownGoalDirSgn = RS_SGN(ownGoalY - ballY);
+			if (RS_SGN(ballVelY) == ownGoalDirSgn && abs(ballVelY) > 500.0f) {
+				return true;
+			}
+			
+			bool ballInOpponentHalf = (player.team == Team::BLUE && state.ball.pos.y > 0) ||
+			                          (player.team == Team::ORANGE && state.ball.pos.y < 0);
+			
+			if (ballInOpponentHalf) {
+				Vec dirToBall = (state.ball.pos - player.pos).Normalized();
+				Vec ballVelDir = state.ball.vel.Normalized();
+				float controlAlignment = ballVelDir.Dot(dirToBall);
+				
+				if (controlAlignment < -0.3f && state.ball.vel.Length() > 300.0f) {
+					return true;
+				}
+			}
+			
+			return false;
+		}
+
+	public:
+		OpenNetReward(float defenderRadius = 2000.0f, float minSpeed = 1000.0f) // Increased minSpeed default
+			: defenderDetectionRadius(defenderRadius), 
+			  minBallSpeedForUnsaveable(minSpeed) {}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
+			
+			// PUNISHMENT: Detect if player is giving ball away
+			if (IsGivingBallAway(player, state)) {
+				return -0.5f;
+			}
+			
+			float ballVelY = state.ball.vel.y;
+			if (abs(ballVelY) < FLT_EPSILON) {
+				return 0;
+			}
+			
+			float scoreDirSgn = RS_SGN(ballVelY);
+			bool headingToOpponentGoal = (player.team == Team::BLUE && scoreDirSgn > 0) ||
+			                             (player.team == Team::ORANGE && scoreDirSgn < 0);
+			
+			if (!headingToOpponentGoal) {
+				return 0;
+			}
+			
+			// STRICT: Only reward if ball is GUARANTEED to score
+			if (!IsBallGuaranteedToScore(state.ball.pos, state.ball.vel)) {
+				return 0; // Not guaranteed - don't reward
+			}
+			
+			float timeToGoal = CalculateTimeToGoal(state.ball.pos, state.ball.vel);
+			
+			if (timeToGoal > 2.0f) {
+				return 0; // Too far - not guaranteed
+			}
+			
+			// CONSERVATIVE: Assume opponents can save unless we're very confident they can't
+			bool canSave = CanOpponentSave(player, state, timeToGoal);
+			
+			if (canSave) {
+				return 0; // Opponents might save - not guaranteed
+			}
+			
+			// Ball is GUARANTEED to go in!
+			
+			if (player.eventState.shot) {
+				return 2.0f;
+			}
+			
+			if (state.goalScored && isFinal) {
+				bool scored = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
+				if (scored) {
+					return 3.0f;
+				}
+			}
+			
+			// Continuous reward (only when guaranteed)
+			float ballSpeed = state.ball.vel.Length();
+			Vec targetGoal = GetTargetGoalFromVelocity(state.ball.vel);
+			float distToGoal = (state.ball.pos - targetGoal).Length();
+			float speedScore = RS_MIN(1.0f, (ballSpeed - minBallSpeedForUnsaveable) / 2000.0f);
+			float distanceScore = RS_MAX(0.0f, 1.0f - (distToGoal / 3000.0f)); // Reduced from 4000
+			
+			return speedScore * distanceScore * 0.4f;
 		}
 	};
 }

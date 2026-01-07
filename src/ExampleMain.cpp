@@ -33,8 +33,9 @@ EnvCreateResult EnvCreateFunc(int index) {
 		// Ball-goal - INCREASED for stronger scoring signal
 		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 10.0f },  // Increased from 2.0 → 10.0
 
-		// Boost
-		{ new PickupBoostReward(), 10.f },
+		// Boost - enhanced collection
+		{ new PickupBoostReward(), 8.f },  // Reduced from 10
+		{ new BigBoostReward(), 25.f },    // NEW: Prioritize big boosts
 		{ new SaveBoostReward(), 0.2f },
 
 		// Ball acceleration - NEW: Rewards speeding up the ball (helps with shots)
@@ -45,18 +46,30 @@ EnvCreateResult EnvCreateFunc(int index) {
 		{ new ZeroSumReward(new DemoReward(), 0.5f), 40 },  // Reduced from 80 → 40
 
 		// Scoring rewards - ENHANCED
-		{ new ShotReward(), 70 },  // NEW: Reward shots on goal (puts ball on target)
-		{ new GoalReward(), 300 },  // Increased from 150 → 200
+		{ new ShotReward(), 70 },
+		{ new GoalReward(), 350 },
+		{ new OpenNetReward(2000.0f, 1000.0f), 90.f },
+		
+		// Own goal punishment
+		{ new OwnGoalPunishment(), 50.f },
 
 		// Double touch rewards - encourage advanced mechanics
 		// Main double touch rewards (adjusted based on OptiV2 analysis)
-		{ new DoubleTouchReward(0.3f, 4.0f, 300.0f, 1000.0f), 70 },  // High aerial double touches
-		{ new WallDoubleTouchReward(0.3f, 5.0f, 200.0f, 500.0f, 0.5f), 65 },  // Reduced from 90 → 65 (OptiV2 has lower wall rewards)
-		{ new DoubleTouchGoalReward(5.0f, 200.0f, 500.0f), 110 },  // Reduced from 200 → 110 (balanced with helper rewards)
+		{ new DoubleTouchReward(0.3f, 4.0f, 300.0f, 1000.0f), 70 },  // High aerial double touches (now with direction checking)
+		{ new WallDoubleTouchReward(0.3f, 5.0f, 200.0f, 500.0f, 0.5f), 50 },  // Reduced from 65 → 50 (removed own backwall, added direction checking)
+		{ new DoubleTouchGoalReward(5.0f, 200.0f, 500.0f), 80 },  // Reduced from 200 → 110 → 80 (balanced vs. regular and air-dribble goals)
 		
 		// Helper rewards - guide agent toward successful double touches (similar to OptiV2's dtap_helper/dtap_trajectory)
 		{ new DoubleTouchHelperReward(300.0f, 1200.0f, 3.0f), 20 },  // Rewards first touch that sets up double touches
-		{ new DoubleTouchTrajectoryReward(300.0f, 1500.0f, 100.0f, 2.0f), 12 }  // Continuous reward for good trajectory
+		{ new DoubleTouchTrajectoryReward(300.0f, 1500.0f, 100.0f, 2.0f), 12 },  // Continuous reward for good trajectory
+		
+		// Air dribble rewards - focus on air dribbling mechanics
+		{ new AirDribbleReward(0.5f), 40.f },           // Main air dribble reward
+		{ new AirDribbleBoostReward(500.0f), 30.f },    // Boosting toward ball
+		{ new AirRollReward(500.0f), 15.f },            // Air rolling
+		{ new FlipResetReward(), 20.f },                // Flip resets (low priority - use when available, don't seek)
+		{ new AirDribbleStartReward(3000.0f), 20.f },   // Setup reward
+		{ new AirDribbleDistanceReward(3.0f), 50.f }   // Distance-based reward (increased from 35 → 50 for stronger air dribble goals)
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
