@@ -1,13 +1,6 @@
 # GigaLearnCPP
 -------------
-
 GigaLearn is an even-faster C++ machine learning framework for Rocket League bots.
-This is a progression far beyond my previous C++ learning framework, RLGymPPO-CPP (which I have stopped developing).
-
-## Speed
-Collection speeds are around 2x faster in GigaLearn than RLGymPPO-CPP, and around 10x faster than RLGym-PPO (on my machine).
-Consumption speeds are a bit faster than RLGymPPO-CPP, although this varies heavily.
-This speed is not at all final and I plan to make the library much faster once I finish other important features.
 
 ## Features
 **Basic Features (Shared With Most Frameworks)**:
