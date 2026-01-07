@@ -24,14 +24,12 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 		// Movement
 		{ new AirReward(), 0.25f },
+		{ new KickoffSpeedFlipReward(3.0f, 1000.0f), 30.f }, // NEW: Encourage speed flips on kickoffs
 
 		// Player-ball
 		{ new FaceBallReward(), 0.25f },
 		{ new VelocityPlayerToBallReward(), 4.f },
 		{ new StrongTouchReward(20, 100), 50 },  // Reduced from 60 - focus on productive touches
-
-		// Ball-goal - INCREASED for stronger scoring signal
-		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 10.0f },  // Increased from 2.0 → 10.0
 
 		// Boost - enhanced collection
 		{ new PickupBoostReward(), 8.f },  // Reduced from 10
@@ -48,28 +46,20 @@ EnvCreateResult EnvCreateFunc(int index) {
 		// Scoring rewards - ENHANCED
 		{ new ShotReward(), 70 },
 		{ new GoalReward(), 350 },
-		{ new OpenNetReward(2000.0f, 1000.0f), 90.f },
 		
 		// Own goal punishment
 		{ new OwnGoalPunishment(), 50.f },
 
-		// Double touch rewards - encourage advanced mechanics
-		// Main double touch rewards (adjusted based on OptiV2 analysis)
-		{ new DoubleTouchReward(0.3f, 4.0f, 300.0f, 1000.0f), 70 },  // High aerial double touches (now with direction checking)
-		{ new WallDoubleTouchReward(0.3f, 5.0f, 200.0f, 500.0f, 0.5f), 50 },  // Reduced from 65 → 50 (removed own backwall, added direction checking)
-		{ new DoubleTouchGoalReward(5.0f, 200.0f, 500.0f), 80 },  // Reduced from 200 → 110 → 80 (balanced vs. regular and air-dribble goals)
-		
 		// Helper rewards - guide agent toward successful double touches (similar to OptiV2's dtap_helper/dtap_trajectory)
 		{ new DoubleTouchHelperReward(300.0f, 1200.0f, 3.0f), 20 },  // Rewards first touch that sets up double touches
 		{ new DoubleTouchTrajectoryReward(300.0f, 1500.0f, 100.0f, 2.0f), 12 },  // Continuous reward for good trajectory
 		
-		// Air dribble rewards - focus on air dribbling mechanics
-		{ new AirDribbleReward(0.5f), 40.f },           // Main air dribble reward
-		{ new AirDribbleBoostReward(500.0f), 30.f },    // Boosting toward ball
-		{ new AirRollReward(500.0f), 15.f },            // Air rolling
-		{ new FlipResetReward(), 20.f },                // Flip resets (low priority - use when available, don't seek)
-		{ new AirDribbleStartReward(3000.0f), 20.f },   // Setup reward
-		{ new AirDribbleDistanceReward(3.0f), 50.f }   // Distance-based reward (increased from 35 → 50 for stronger air dribble goals)
+		// Air dribble rewards - focus on air dribbling mechanics (DOUBLED weights to prioritize)
+		{ new AirDribbleReward(0.5f), 80.f },           // Main air dribble reward (40 → 80)
+		{ new AirDribbleBoostReward(500.0f), 60.f },    // Boosting toward ball (30 → 60)
+		{ new AirRollReward(500.0f), 30.f },            // Air rolling (15 → 30)
+		{ new AirDribbleStartReward(3000.0f), 40.f },   // Setup reward (20 → 40)
+		{ new AirDribbleDistanceReward(3.0f), 100.f }   // Distance-based reward (50 → 100)
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
