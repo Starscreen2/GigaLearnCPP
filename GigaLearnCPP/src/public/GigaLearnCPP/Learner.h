@@ -5,6 +5,8 @@
 #include "Util/RenderSender.h"
 #include "LearnerConfig.h"
 #include "PPO/TransferLearnConfig.h"
+#include <chrono>
+#include <cstdint>
 
 namespace GGL {
 
@@ -57,6 +59,13 @@ namespace GGL {
 		void Load();
 		void SaveStats(std::filesystem::path path);
 		void LoadStats(std::filesystem::path path);
+		void LogTimestamp(const Report& report); // Log timestamp for freeze detection
+
+		// Static variables for freeze detection logging
+		static std::chrono::system_clock::time_point lastLogTime;
+		static int64_t lastLoggedIteration;
+		static bool checkpointSaveInProgress;
+		static std::chrono::system_clock::time_point checkpointSaveStartTime;
 
 		RG_NO_COPY(Learner);
 

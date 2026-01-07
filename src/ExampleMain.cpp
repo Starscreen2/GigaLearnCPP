@@ -8,7 +8,7 @@
 #include <RLGymCPP/OBSBuilders/AdvancedObsPadded.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
-// Removed CustomRewards.h - using basic rewards from GitHub repo instead
+#include "CustomRewards.h"
 #include <filesystem>
 #include <chrono>
 #include <sstream>
@@ -19,7 +19,7 @@ using namespace RLGC; // RLGymCPP
 
 // Create the RLGymCPP environment for each of our games
 EnvCreateResult EnvCreateFunc(int index) {
-	// Basic rewards from GitHub repo - proven to produce a scoring bot in ~100m steps
+	// Optimized rewards for scoring and shots on target
 	std::vector<WeightedReward> rewards = {
 
 		// Movement
@@ -28,19 +28,35 @@ EnvCreateResult EnvCreateFunc(int index) {
 		// Player-ball
 		{ new FaceBallReward(), 0.25f },
 		{ new VelocityPlayerToBallReward(), 4.f },
-		{ new StrongTouchReward(20, 100), 60 },
+		{ new StrongTouchReward(20, 100), 50 },  // Reduced from 60 - focus on productive touches
 
-		// Ball-goal
-		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 2.0f },
+		// Ball-goal - INCREASED for stronger scoring signal
+		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 10.0f },  // Increased from 2.0 → 10.0
 
 		// Boost
 		{ new PickupBoostReward(), 10.f },
 		{ new SaveBoostReward(), 0.2f },
 
-		// Game events
-		{ new ZeroSumReward(new BumpReward(), 0.5f), 20 },
-		{ new ZeroSumReward(new DemoReward(), 0.5f), 80 },
-		{ new GoalReward(), 150 }
+		// Ball acceleration - NEW: Rewards speeding up the ball (helps with shots)
+		{ new TouchAccelReward(), 50 },  // NEW: Reward accelerating ball toward goal
+
+		// Game events - REDUCED to focus on scoring
+		{ new ZeroSumReward(new BumpReward(), 0.5f), 12 },  // Reduced from 20 → 12
+		{ new ZeroSumReward(new DemoReward(), 0.5f), 40 },  // Reduced from 80 → 40
+
+		// Scoring rewards - ENHANCED
+		{ new ShotReward(), 70 },  // NEW: Reward shots on goal (puts ball on target)
+		{ new GoalReward(), 300 },  // Increased from 150 → 200
+
+		// Double touch rewards - encourage advanced mechanics
+		// Main double touch rewards (adjusted based on OptiV2 analysis)
+		{ new DoubleTouchReward(0.3f, 4.0f, 300.0f, 1000.0f), 70 },  // High aerial double touches
+		{ new WallDoubleTouchReward(0.3f, 5.0f, 200.0f, 500.0f, 0.5f), 65 },  // Reduced from 90 → 65 (OptiV2 has lower wall rewards)
+		{ new DoubleTouchGoalReward(5.0f, 200.0f, 500.0f), 110 },  // Reduced from 200 → 110 (balanced with helper rewards)
+		
+		// Helper rewards - guide agent toward successful double touches (similar to OptiV2's dtap_helper/dtap_trajectory)
+		{ new DoubleTouchHelperReward(300.0f, 1200.0f, 3.0f), 20 },  // Rewards first touch that sets up double touches
+		{ new DoubleTouchTrajectoryReward(300.0f, 1500.0f, 100.0f, 2.0f), 12 }  // Continuous reward for good trajectory
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -150,22 +166,23 @@ int main(int argc, char* argv[]) {
 	// Number of parallel game instances
 	// More games = faster training but more RAM usage
 	// 128 for 16GB RAM, 256 for 32GB RAM, 512-1024 for 64GB RAM
-	// Reduced to 256 for long training sessions to prevent memory issues
-	cfg.numGames = 256;  // Reduced from 512 to prevent "bad allocation" errors during long training
+	// Kept at 256 to prevent "bad allocation" errors during long training
+	cfg.numGames = 256;  // Kept at 256 to avoid memory issues
 
 	// Leave this empty to use a random seed each run
 	// The random seed can have a strong effect on the outcome of a run
 	cfg.randomSeed = 123;
 
-	// Timesteps per iteration - stable configuration
-	int tsPerItr = 50'000;  // Stable value that works well
+	// Timesteps per iteration - increased for better sample efficiency
+	int tsPerItr = 100'000;  // Doubled from 50k for better sample efficiency
 	cfg.ppo.tsPerItr = tsPerItr;
-	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 50'000; // Stable value for GPU utilization
+	cfg.ppo.batchSize = tsPerItr;  // Must match tsPerItr
 
-	// Using 2 epochs seems pretty optimal when comparing time training to skill
-	// Perhaps 1 or 3 is better for you, test and find out!
-	cfg.ppo.epochs = 1;
+	// True minibatching - enables 4 minibatches per batch for better GPU utilization
+	cfg.ppo.miniBatchSize = 25'000;  // 4 minibatches per batch (100k / 25k = 4)
+
+	// Using 2 epochs is optimal for sample efficiency (trains on same data twice)
+	cfg.ppo.epochs = 2;  // Increased from 1 for better sample efficiency
 
 	// This scales differently than "ent_coef" in other frameworks
 	// This is the scale for normalized entropy, which means you won't have to change it if you add more actions
@@ -219,8 +236,9 @@ int main(int argc, char* argv[]) {
 	cfg.renderMode = false;
 
 	// Checkpoint saving: Save every 150 iterations
-	// With 150,000 timesteps per iteration, this saves every 22,500,000 timesteps
-	cfg.tsPerSave = 150 * tsPerItr; // 150 iterations = 22,500,000 timesteps
+	// With 50,000 timesteps per iteration, this saves every 7,500,000 timesteps
+	cfg.tsPerSave = 150 * tsPerItr; // 150 iterations = 7,500,000 timesteps
+	cfg.checkpointsToKeep = 2000; // Keep last 2000 checkpoints (~12.5 GB)
 
 	// Make the learner with the environment creation function and the config we just made
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);

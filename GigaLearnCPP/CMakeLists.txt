@@ -32,6 +32,11 @@ if (TORCH_CUDA_LIBRARIES)
 	target_compile_definitions(GigaLearnCPP PRIVATE -DRG_CUDA_SUPPORT)
 endif()
 
+# Link psapi.lib on Windows for GetProcessMemoryInfo
+if (WIN32)
+	target_link_libraries(GigaLearnCPP PRIVATE psapi)
+endif()
+
 # Set C++ version to 20 (RocketSim requires C++20)
 set_target_properties(GigaLearnCPP PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(GigaLearnCPP PROPERTIES CXX_STANDARD 20)

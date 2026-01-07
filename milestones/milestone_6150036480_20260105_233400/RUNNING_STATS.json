@@ -1,0 +1,10 @@
+{
+    "return_stat": {
+        "count": 12734250,
+        "mean": 209.5973685914819,
+        "var": 219988552198.4189
+    },
+    "run_id": "t2gw8clr",
+    "total_iterations": 84895,
+    "total_timesteps": 6150036480
+}

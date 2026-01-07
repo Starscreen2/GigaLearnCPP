@@ -10,9 +10,17 @@
 #include <iomanip>
 #include <chrono>
 #include <sstream>
+#include <fstream>
 
 #ifdef RG_CUDA_SUPPORT
 #include <c10/cuda/CUDACachingAllocator.h>
+#include <torch/cuda.h>
+#include <cuda_runtime.h>
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
 #endif
 #include <private/GigaLearnCPP/PPO/ExperienceBuffer.h>
 #include <private/GigaLearnCPP/PPO/GAE.h>
@@ -23,6 +31,12 @@
 #include "Util/AvgTracker.h"
 
 using namespace RLGC;
+
+// Initialize static variables for freeze detection logging
+std::chrono::system_clock::time_point GGL::Learner::lastLogTime{};
+int64_t GGL::Learner::lastLoggedIteration = -1;
+bool GGL::Learner::checkpointSaveInProgress = false;
+std::chrono::system_clock::time_point GGL::Learner::checkpointSaveStartTime{};
 
 GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbackFn stepCallback) :
 	envCreateFn(envCreateFn), config(config), stepCallback(stepCallback)
@@ -226,9 +240,169 @@ void GGL::Learner::LoadStats(std::filesystem::path path) {
 // Different than RLGym-PPO to show that they are not compatible
 constexpr const char* STATS_FILE_NAME = "RUNNING_STATS.json";
 
+// Helper functions for system memory info
+static void GetSystemMemoryInfo(size_t& totalRAM, size_t& usedRAM, size_t& availableRAM) {
+#ifdef _WIN32
+	MEMORYSTATUSEX memInfo;
+	memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+	GlobalMemoryStatusEx(&memInfo);
+	
+	totalRAM = memInfo.ullTotalPhys;
+	usedRAM = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
+	availableRAM = memInfo.ullAvailPhys;
+#else
+	totalRAM = usedRAM = availableRAM = 0;
+#endif
+}
+
+static void GetProcessMemoryInfo(size_t& processRAM) {
+#ifdef _WIN32
+	PROCESS_MEMORY_COUNTERS_EX pmc;
+	if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+		processRAM = pmc.WorkingSetSize;
+	} else {
+		processRAM = 0;
+	}
+#else
+	processRAM = 0;
+#endif
+}
+
+static void GetGPUMemoryInfo(size_t& allocated, size_t& reserved, size_t& free) {
+#ifdef RG_CUDA_SUPPORT
+	if (torch::cuda::is_available()) {
+		try {
+			// Get total and free GPU memory using CUDA runtime API
+			size_t freeMem = 0, totalMem = 0;
+			cudaError_t err = cudaMemGetInfo(&freeMem, &totalMem);
+			if (err == cudaSuccess) {
+				free = freeMem;
+				// Calculate allocated as total - free
+				allocated = totalMem - freeMem;
+				// Reserved is same as allocated for our purposes
+				// (PyTorch's reserved vs allocated distinction is internal)
+				reserved = allocated;
+			} else {
+				allocated = reserved = free = 0;
+			}
+		} catch (...) {
+			allocated = reserved = free = 0;
+		}
+	} else {
+		allocated = reserved = free = 0;
+	}
+#else
+	allocated = reserved = free = 0;
+#endif
+}
+
+void GGL::Learner::LogTimestamp(const Report& report) {
+	// Create training_logs folder outside checkpoint directory
+	std::filesystem::path logDir = "training_logs";
+	std::filesystem::create_directories(logDir);
+	
+	// Use a simple heartbeat file name
+	std::filesystem::path logFile = logDir / "training_heartbeat.txt";
+	
+	// Get current timestamp
+	auto now = std::chrono::system_clock::now();
+	auto time_t = std::chrono::system_clock::to_time_t(now);
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		now.time_since_epoch()) % 1000;
+	
+	// Open file in append mode
+	std::ofstream logStream(logFile, std::ios::app);
+	if (!logStream.good()) {
+		// Silently fail - don't crash training if logging fails
+		return;
+	}
+	
+	// Calculate time since last log (to detect freezes)
+	double timeSinceLastLog = 0.0;
+	if (lastLogTime.time_since_epoch().count() > 0) {
+		auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLogTime);
+		timeSinceLastLog = elapsed.count() / 1000.0; // seconds
+	}
+	lastLogTime = now;
+	
+	// Get memory info
+	size_t totalRAM = 0, usedRAM = 0, availableRAM = 0;
+	size_t processRAM = 0;
+	GetSystemMemoryInfo(totalRAM, usedRAM, availableRAM);
+	GetProcessMemoryInfo(processRAM);
+	
+	// Get GPU memory info
+	size_t gpuAllocated = 0, gpuReserved = 0, gpuFree = 0;
+	GetGPUMemoryInfo(gpuAllocated, gpuReserved, gpuFree);
+	
+	// Write timestamp and key info
+	logStream << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+	logStream << "." << std::setfill('0') << std::setw(3) << ms.count();
+	logStream << " | Iter: " << totalIterations;
+	logStream << " | TS: " << totalTimesteps;
+	
+	// Time since last log (critical for freeze detection)
+	if (timeSinceLastLog > 0) {
+		logStream << " | ΔT: " << std::fixed << std::setprecision(2) << timeSinceLastLog << "s";
+		if (timeSinceLastLog > 30.0) {
+			logStream << " [FREEZE WARNING!]";
+		}
+	}
+	
+	// Memory info
+	logStream << " | RAM: " << (processRAM / (1024 * 1024)) << "MB";
+	logStream << " / " << (usedRAM / (1024 * 1024)) << "MB";
+	logStream << " (avail: " << (availableRAM / (1024 * 1024)) << "MB)";
+	
+	// GPU memory info
+	if (gpuAllocated > 0 || gpuReserved > 0) {
+		logStream << " | GPU: " << (gpuAllocated / (1024 * 1024)) << "MB";
+		logStream << " / " << (gpuReserved / (1024 * 1024)) << "MB";
+		if (gpuFree > 0) {
+			logStream << " (free: " << (gpuFree / (1024 * 1024)) << "MB)";
+		}
+	}
+	
+	// Checkpoint save status
+	if (checkpointSaveInProgress) {
+		auto saveElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+			now - checkpointSaveStartTime);
+		logStream << " | [CHECKPOINT SAVE: " << (saveElapsed.count() / 1000.0) << "s]";
+	}
+	
+	// Add key metrics if available
+	if (report.Has("Average Step Reward"))
+		logStream << " | AvgRew: " << std::fixed << std::setprecision(4) << report["Average Step Reward"];
+	if (report.Has("Policy Entropy"))
+		logStream << " | Ent: " << std::fixed << std::setprecision(4) << report["Policy Entropy"];
+	if (report.Has("Overall Steps/Second"))
+		logStream << " | Spd: " << std::fixed << std::setprecision(1) << report["Overall Steps/Second"];
+	
+	logStream << std::endl;
+	logStream.flush(); // Force write to disk immediately
+	lastLoggedIteration = totalIterations;
+}
+
 void GGL::Learner::Save() {
 	if (config.checkpointFolder.empty())
 		RG_ERR_CLOSE("Learner::Save(): Cannot save because config.checkpointSaveFolder is not set");
+
+	// Log checkpoint save start
+	checkpointSaveInProgress = true;
+	checkpointSaveStartTime = std::chrono::system_clock::now();
+	
+	std::filesystem::path logDir = "training_logs";
+	std::filesystem::create_directories(logDir);
+	std::filesystem::path logFile = logDir / "training_heartbeat.txt";
+	std::ofstream logStream(logFile, std::ios::app);
+	if (logStream.good()) {
+		auto now = std::chrono::system_clock::now();
+		auto time_t = std::chrono::system_clock::to_time_t(now);
+		logStream << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+		logStream << " | [CHECKPOINT SAVE START] Iter: " << totalIterations;
+		logStream << " | TS: " << totalTimesteps << std::endl;
+		logStream.flush();
+	}
 
 	std::filesystem::path saveFolder = config.checkpointFolder / std::to_string(totalTimesteps);
 	std::filesystem::create_directories(saveFolder);
@@ -237,7 +411,7 @@ void GGL::Learner::Save() {
 	SaveStats(saveFolder / STATS_FILE_NAME);
 	ppo->SaveTo(saveFolder);
 
-	// Remove old checkpoints
+	// Remove old checkpoints (with logging for freeze detection)
 	if (config.checkpointsToKeep != -1) {
 		std::set<int64_t> allSavedTimesteps = Utils::FindNumberedDirs(config.checkpointFolder);
 		while (allSavedTimesteps.size() > config.checkpointsToKeep) {
@@ -246,8 +420,30 @@ void GGL::Learner::Save() {
 				lowestCheckpointTS = RS_MIN(lowestCheckpointTS, savedTimesteps);
 
 			std::filesystem::path removePath = config.checkpointFolder / std::to_string(lowestCheckpointTS);
+			
+			// Log deletion start (capture time outside if block for duration calculation)
+			auto nowDel = std::chrono::system_clock::now();
+			std::ofstream logStreamDel(logFile, std::ios::app);
+			if (logStreamDel.good()) {
+				auto time_t_del = std::chrono::system_clock::to_time_t(nowDel);
+				logStreamDel << std::put_time(std::localtime(&time_t_del), "%Y-%m-%d %H:%M:%S");
+				logStreamDel << " | [CHECKPOINT DELETE START] " << removePath.filename().string() << std::endl;
+				logStreamDel.flush();
+			}
+			
 			try {
 				std::filesystem::remove_all(removePath);
+				
+				// Log deletion end
+				auto nowDelEnd = std::chrono::system_clock::now();
+				auto durationDel = std::chrono::duration_cast<std::chrono::milliseconds>(nowDelEnd - nowDel);
+				std::ofstream logStreamDelEnd(logFile, std::ios::app);
+				if (logStreamDelEnd.good()) {
+					auto time_t_del_end = std::chrono::system_clock::to_time_t(nowDelEnd);
+					logStreamDelEnd << std::put_time(std::localtime(&time_t_del_end), "%Y-%m-%d %H:%M:%S");
+					logStreamDelEnd << " | [CHECKPOINT DELETE END] Duration: " << (durationDel.count() / 1000.0) << "s" << std::endl;
+					logStreamDelEnd.flush();
+				}
 			} catch (std::exception& e) {
 				RG_ERR_CLOSE("Failed to remove old checkpoint from " << removePath << ", exception: " << e.what());
 			}
@@ -259,6 +455,23 @@ void GGL::Learner::Save() {
 		versionMgr->SaveVersions();
 
 	RG_LOG(" > Done.");
+	
+	// Log checkpoint save completion
+	checkpointSaveInProgress = false;
+	auto saveEndTime = std::chrono::system_clock::now();
+	auto saveDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+		saveEndTime - checkpointSaveStartTime);
+	
+	// Reopen log file for completion message
+	std::ofstream logStreamEnd(logFile, std::ios::app);
+	if (logStreamEnd.good()) {
+		auto now = std::chrono::system_clock::now();
+		auto time_t = std::chrono::system_clock::to_time_t(now);
+		logStreamEnd << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+		logStreamEnd << " | [CHECKPOINT SAVE END] Duration: " << (saveDuration.count() / 1000.0) << "s";
+		logStreamEnd << " | Iter: " << totalIterations << " | TS: " << totalTimesteps << std::endl;
+		logStreamEnd.flush();
+	}
 }
 
 void GGL::Learner::Load() {
@@ -484,6 +697,11 @@ void GGL::Learner::StartTransferLearn(const TransferLearnConfig& tlConfig) {
 
 			report.Finish();
 
+			// Log timestamp for freeze detection (every 10 iterations to keep file size manageable)
+			if (totalIterations % 10 == 0) {
+				LogTimestamp(report);
+			}
+
 			if (metricSender)
 				metricSender->Send(report);
 
@@ -518,6 +736,20 @@ void GGL::Learner::Start() {
 
 	if (render)
 		RG_LOG("\t(Render mode enabled)");
+
+	// Log training start timestamp
+	std::filesystem::path logDir = "training_logs";
+	std::filesystem::create_directories(logDir);
+	std::filesystem::path logFile = logDir / "training_heartbeat.txt";
+	std::ofstream logStream(logFile, std::ios::app);
+	if (logStream.good()) {
+		auto now = std::chrono::system_clock::now();
+		auto time_t = std::chrono::system_clock::to_time_t(now);
+		logStream << "=== TRAINING STARTED ===" << std::endl;
+		logStream << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+		logStream << " | Starting training session" << std::endl;
+		logStream.flush();
+	}
 
 	try {
 		bool saveQueued;
@@ -679,6 +911,11 @@ void GGL::Learner::Start() {
 							ppo->InferActions(tdNewStates, tdNewActionMasks, &tNewActions, &tLogProbs);
 							ppo->InferActions(tdOldStates, tdOldActionMasks, &tOldActions, NULL, &oldVersion->models);
 
+						// Synchronize GPU operations before CPU access to prevent hangs
+#ifdef RG_CUDA_SUPPORT
+						if (ppo->device.is_cuda())
+							torch::cuda::synchronize();
+#endif
 							tActions = torch::zeros(numPlayers, tNewActions.dtype());
 							tActions.index_copy_(0, tNewPlayerIndices, tNewActions.cpu());
 							tActions.index_copy_(0, tOldPlayerIndices, tOldActions.cpu());
@@ -686,6 +923,11 @@ void GGL::Learner::Start() {
 							torch::Tensor tdStates = tStates.to(ppo->device, true);
 							torch::Tensor tdActionMasks = tActionMasks.to(ppo->device, true);
 							ppo->InferActions(tdStates, tdActionMasks, &tActions, &tLogProbs);
+							// Synchronize GPU operations before CPU access to prevent hangs
+#ifdef RG_CUDA_SUPPORT
+							if (ppo->device.is_cuda())
+								torch::cuda::synchronize();
+#endif
 							tActions = tActions.cpu();
 						}
 						inferTime += inferTimer.Elapsed();
@@ -812,7 +1054,13 @@ void GGL::Learner::Start() {
 							int end = RS_MIN(i + ppo->config.miniBatchSize, combinedTraj.Length());
 							torch::Tensor tStatesPart = tStates.slice(0, start, end);
 
-							auto valPredsPart = ppo->InferCritic(tStatesPart.to(ppo->device, true, true)).cpu();
+							auto valPredsPart = ppo->InferCritic(tStatesPart.to(ppo->device, true, true));
+							// Synchronize GPU operations before CPU access to prevent hangs
+#ifdef RG_CUDA_SUPPORT
+							if (ppo->device.is_cuda())
+								torch::cuda::synchronize();
+#endif
+							valPredsPart = valPredsPart.cpu();
 							RG_ASSERT(valPredsPart.size(0) == (end - start));
 							tValPreds.slice(0, start, end).copy_(valPredsPart, true);
 						}
@@ -822,7 +1070,13 @@ void GGL::Learner::Start() {
 							// If this is ever actually a real problem in a legitimate use case, ping Zealan in the dead of night
 							RG_ASSERT(tNextTruncStates.size(0) <= ppo->config.miniBatchSize);
 
-							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(ppo->device, true, true)).cpu();
+							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(ppo->device, true, true));
+							// Synchronize GPU operations before CPU access to prevent hangs
+#ifdef RG_CUDA_SUPPORT
+							if (ppo->device.is_cuda())
+								torch::cuda::synchronize();
+#endif
+							tTruncValPreds = tTruncValPreds.cpu();
 						}
 					}
 
@@ -1020,10 +1274,15 @@ void GGL::Learner::Start() {
 					}
 				}
 
-				report.Finish();
+			report.Finish();
 
-				if (metricSender)
-					metricSender->Send(report);
+			// Log timestamp for freeze detection (every 10 iterations to keep file size manageable)
+			if (totalIterations % 10 == 0) {
+				LogTimestamp(report);
+			}
+
+			if (metricSender)
+				metricSender->Send(report);
 
 				report.Display(
 					{
