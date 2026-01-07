@@ -32,8 +32,10 @@ EnvCreateResult EnvCreateFunc(int index) {
 		{ new StrongTouchReward(20, 100), 50 },  // Reduced from 60 - focus on productive touches
 
 		// Boost - enhanced collection
-		{ new PickupBoostReward(), 8.f },  // Reduced from 10
-		{ new BigBoostReward(), 25.f },    // NEW: Prioritize big boosts
+		{ new PickupBoostReward(), 12.f },  // Increased from 8 to encourage more collection
+		{ new BigBoostReward(), 35.f },     // Increased from 25 to prioritize big boosts
+		{ new BoostPadProximityReward(2000.0f, 30.0f), 18.f }, // NEW: Reward moving toward pads when low
+		{ new BoostEfficiencyReward(), 12.f }, // NEW: Reward collecting when boost is needed
 		{ new SaveBoostReward(), 0.2f },
 
 		// Ball acceleration - NEW: Rewards speeding up the ball (helps with shots)
@@ -57,8 +59,8 @@ EnvCreateResult EnvCreateFunc(int index) {
 		// Air dribble rewards - focus on air dribbling mechanics (DOUBLED weights to prioritize)
 		{ new AirDribbleReward(0.5f), 80.f },           // Main air dribble reward (40 → 80)
 		{ new AirDribbleBoostReward(500.0f), 60.f },    // Boosting toward ball (30 → 60)
-		{ new AirRollReward(500.0f), 30.f },            // Air rolling (15 → 30)
-		{ new AirDribbleStartReward(3000.0f), 40.f },   // Setup reward (20 → 40)
+		{ new AirDribbleSetupReward(2.0f, 0.3f), 35.f }, // Setup phase reward (ground/wall touches)
+		{ new AirDribbleStartReward(3000.0f), 40.f },   // First aerial touch reward (20 → 40)
 		{ new AirDribbleDistanceReward(3.0f), 100.f }   // Distance-based reward (50 → 100)
 	};
 
