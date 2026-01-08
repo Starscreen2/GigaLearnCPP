@@ -29,7 +29,7 @@ EnvCreateResult EnvCreateFunc(int index) {
 		// Player-ball
 		{ new FaceBallReward(), 0.25f },
 		{ new VelocityPlayerToBallReward(), 4.f },
-		{ new StrongTouchReward(20, 100), 50 },  // Reduced from 60 - focus on productive touches
+		{ new StrongTouchReward(20, 100), 30 },  // Reduced from 50 to 30 - avoid conflict with air dribble control
 
 		// Boost - enhanced collection
 		{ new PickupBoostReward(), 12.f },  // Increased from 8 to encourage more collection
@@ -39,7 +39,7 @@ EnvCreateResult EnvCreateFunc(int index) {
 		{ new SaveBoostReward(), 0.2f },
 
 		// Ball acceleration - NEW: Rewards speeding up the ball (helps with shots)
-		{ new TouchAccelReward(), 50 },  // NEW: Reward accelerating ball toward goal
+		{ new TouchAccelReward(), 30 },  // Reduced from 50 to 30 - avoid conflict with air dribble control
 
 		// Game events - REDUCED to focus on scoring
 		{ new ZeroSumReward(new BumpReward(), 0.5f), 12 },  // Reduced from 20 → 12

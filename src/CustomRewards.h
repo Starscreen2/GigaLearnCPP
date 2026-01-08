@@ -5,6 +5,31 @@
 
 namespace RLGC {
 
+	// Helper function to check if ball is in opponent's corner or off their backboard
+	// Prevents rewarding air dribbles in bad positions
+	inline bool IsBallInOpponentCornerOrBackboard(const Player& player, const GameState& state) {
+		Vec ballPos = state.ball.pos;
+		
+		// Check if ball is behind opponent's goal line (backboard)
+		bool behindGoalLine = (player.team == Team::BLUE) ? 
+			(ballPos.y > CommonValues::BACK_WALL_Y) : 
+			(ballPos.y < -CommonValues::BACK_WALL_Y);
+		
+		// High up off backboard (Z > 1000 indicates clearly off backboard)
+		bool offBackboard = behindGoalLine && ballPos.z > 1000.0f;
+		
+		// Check if in opponent corner (near side walls and opponent's back wall)
+		// Corner: |X| > 3000 (close to side walls) AND in opponent's half
+		bool inOpponentHalf = (player.team == Team::BLUE) ? 
+			(ballPos.y > 0) : (ballPos.y < 0);
+		bool nearSideWall = abs(ballPos.x) > 3000.0f;
+		bool nearBackWall = (player.team == Team::BLUE) ? 
+			(ballPos.y > 4000.0f) : (ballPos.y < -4000.0f);
+		bool inCorner = inOpponentHalf && nearSideWall && nearBackWall;
+		
+		return offBackboard || inCorner;
+	}
+
 	// Helper reward for touches that set up double touches
 	// Rewards the first touch in a potential double-touch sequence
 	// Guides the agent to make touches that enable follow-up double touches
@@ -388,6 +413,10 @@ namespace RLGC {
 			if (!state.prev)
 				return 0;
 
+			// Don't reward air dribbles in opponent corners or off their backboards
+			if (IsBallInOpponentCornerOrBackboard(player, state))
+				return 0;
+
 			int carId = player.carId;
 			bool isInAir = !player.isOnGround;
 			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
@@ -508,6 +537,10 @@ namespace RLGC {
 			if (!state.prev)
 				return 0;
 
+			// Don't reward air dribbles in opponent corners or off their backboards
+			if (IsBallInOpponentCornerOrBackboard(player, state))
+				return 0;
+
 			int carId = player.carId;
 			bool isInAir = !player.isOnGround;
 			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
@@ -579,6 +612,10 @@ namespace RLGC {
 
 		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
 			if (!state.prev)
+				return 0;
+
+			// Don't reward air dribbles in opponent corners or off their backboards
+			if (IsBallInOpponentCornerOrBackboard(player, state))
 				return 0;
 
 			// Check if this is a new aerial touch (starts air dribble)
@@ -673,6 +710,10 @@ namespace RLGC {
 
 		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
 			if (!state.prev)
+				return 0;
+
+			// Don't reward air dribbles in opponent corners or off their backboards
+			if (IsBallInOpponentCornerOrBackboard(player, state))
 				return 0;
 
 			int carId = player.carId;
@@ -776,6 +817,10 @@ namespace RLGC {
 			if (!state.prev)
 				return 0;
 
+			// Don't reward air dribbles in opponent corners or off their backboards
+			if (IsBallInOpponentCornerOrBackboard(player, state))
+				return 0;
+
 			int carId = player.carId;
 			bool isInAir = !player.isOnGround;
 			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
@@ -851,81 +896,89 @@ namespace RLGC {
 	}
 };
 
-// Rewards speed flips on kickoffs - encourages fast ground movement and quick flips
-class KickoffSpeedFlipReward : public Reward {
-private:
-	float maxKickoffTime;
-	float minSpeedForReward;
-	std::unordered_map<int, float> kickoffStartTime;
-	std::unordered_map<int, bool> inKickoff;
+	// Rewards speed flips on kickoffs - encourages fast ground movement and quick flips
+	class KickoffSpeedFlipReward : public Reward {
+	private:
+		float maxKickoffTime;
+		float minSpeedForReward;
+		std::unordered_map<int, float> kickoffStartTime;
+		std::unordered_map<int, bool> inKickoff;
 
-public:
-	KickoffSpeedFlipReward(float maxTime = 3.0f, float minSpeed = 1000.0f)
-		: maxKickoffTime(maxTime), minSpeedForReward(minSpeed) {}
+	public:
+		KickoffSpeedFlipReward(float maxTime = 3.0f, float minSpeed = 1000.0f)
+			: maxKickoffTime(maxTime), minSpeedForReward(minSpeed) {}
 
-	virtual void Reset(const GameState& initialState) override {
-		kickoffStartTime.clear();
-		inKickoff.clear();
-		for (const auto& player : initialState.players) {
-			kickoffStartTime[player.carId] = 0.0f;
-			inKickoff[player.carId] = false;
-		}
-	}
-
-	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
-		if (!state.prev)
-			return 0;
-
-		int carId = player.carId;
-		
-		// Detect kickoff: ball at center, low velocity
-		bool ballAtCenter = (state.ball.pos.Length() < 500.0f && abs(state.ball.pos.z) < 100.0f);
-		bool ballStationary = state.ball.vel.Length() < 100.0f;
-		
-		// Track kickoff state per player
-		if (ballAtCenter && ballStationary) {
-			inKickoff[carId] = true;
-			kickoffStartTime[carId] = 0.0f;
-		} else if (inKickoff[carId]) {
-			kickoffStartTime[carId] += state.deltaTime;
-			if (kickoffStartTime[carId] > maxKickoffTime || state.ball.vel.Length() > 500.0f) {
-				inKickoff[carId] = false;
+		virtual void Reset(const GameState& initialState) override {
+			kickoffStartTime.clear();
+			inKickoff.clear();
+			for (const auto& player : initialState.players) {
+				kickoffStartTime[player.carId] = 0.0f;
+				inKickoff[player.carId] = false;
 			}
 		}
 
-		if (!inKickoff[carId])
-			return 0;
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
 
-		// Only reward ground-based speed flips (not aerial)
-		if (!player.isOnGround)
-			return 0;
+			int carId = player.carId;
+			
+			// Detect kickoff: ball at center, low velocity
+			bool ballAtCenter = (state.ball.pos.Length() < 500.0f && abs(state.ball.pos.z) < 100.0f);
+			bool ballStationary = state.ball.vel.Length() < 100.0f;
+			
+			// Track kickoff state per player
+			if (ballAtCenter && ballStationary) {
+				inKickoff[carId] = true;
+				kickoffStartTime[carId] = 0.0f;
+			} else if (inKickoff[carId]) {
+				kickoffStartTime[carId] += state.deltaTime;
+				if (kickoffStartTime[carId] > maxKickoffTime || state.ball.vel.Length() > 500.0f) {
+					inKickoff[carId] = false;
+				}
+			}
 
-		// Reward high ground speed toward ball
-		float speed = player.vel.Length();
-		if (speed < minSpeedForReward)
-			return 0;
+			if (!inKickoff[carId])
+				return 0;
 
-		Vec dirToBall = (state.ball.pos - player.pos).Normalized();
-		float speedTowardBall = player.vel.Dot(dirToBall);
-		
-		// Base reward for high speed toward ball
-		float reward = RS_MIN(1.0f, speedTowardBall / CommonValues::CAR_MAX_SPEED);
+			// Only reward ground-based speed flips (not aerial)
+			if (!player.isOnGround)
+				return 0;
 
-		// Bonus for using flip (detect flip state)
-		if (player.isFlipping) {
-			reward *= 1.5f; // 50% bonus for flipping
+			// Reward high ground speed toward ball
+			float speed = player.vel.Length();
+			
+			// Punish if not flipping and not fast enough during kickoff
+			if (!player.isFlipping && speed < minSpeedForReward) {
+				// Apply punishment proportional to time in kickoff
+				float punishment = -0.1f * (kickoffStartTime[carId] / maxKickoffTime);
+				return punishment;
+			}
+			
+			if (speed < minSpeedForReward)
+				return 0;
+
+			Vec dirToBall = (state.ball.pos - player.pos).Normalized();
+			float speedTowardBall = player.vel.Dot(dirToBall);
+			
+			// Base reward for high speed toward ball
+			float reward = RS_MIN(1.0f, speedTowardBall / CommonValues::CAR_MAX_SPEED);
+
+			// Bonus for using flip (detect flip state)
+			if (player.isFlipping) {
+				reward *= 1.5f; // 50% bonus for flipping
+			}
+
+			// Bonus for fast acceleration (speed flip characteristic)
+			float prevSpeed = state.prev->players[player.index].vel.Length();
+			float accel = (speed - prevSpeed) / state.deltaTime;
+			if (accel > 2000.0f) { // Fast acceleration
+				reward *= 1.3f; // 30% bonus
+			}
+
+			return reward * 0.5f; // Scale down to reasonable level
 		}
-
-		// Bonus for fast acceleration (speed flip characteristic)
-		float prevSpeed = state.prev->players[player.index].vel.Length();
-		float accel = (speed - prevSpeed) / state.deltaTime;
-		if (accel > 2000.0f) { // Fast acceleration
-			reward *= 1.3f; // 30% bonus
-		}
-
-	return reward * 0.5f; // Scale down to reasonable level
-}
-};
+	};
 
 }
 
