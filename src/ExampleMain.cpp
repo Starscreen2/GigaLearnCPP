@@ -8,11 +8,12 @@
 #include <RLGymCPP/OBSBuilders/AdvancedObsPadded.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
-#include "CustomRewards.h"
+#include "CustomRewards.h" // Includes CustomBasicMechanicsRewards.h and CustomKickoffRewards.h
 #include <filesystem>
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <unordered_map>
 
 using namespace GGL; // GigaLearn
 using namespace RLGC; // RLGymCPP
@@ -24,44 +25,49 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 		// Movement
 		{ new AirReward(), 0.25f },
-		{ new KickoffSpeedFlipReward(3.0f, 1000.0f), 30.f }, // NEW: Encourage speed flips on kickoffs
+		{ new KickoffSpeedFlipReward(3.0f, 1000.0f), 60.f }, // INCREASED: Encourage aggressive speed flips on kickoffs (30 → 60)
+		{ new KickoffFirstTouchReward(100.0f, 8.0f, 5.0f, 60.0f), 100.f }, // Reward first touch (100), punishment matches speed flip weight (60) to encourage going for ball
+		{ new GroundToAirPopReward(340.0f, 180.0f, 260.0f, 350.0f, 120.0f, 1.0f, 0.35f, 0.5f, 0.6f, 0.4f), 30.f }, // NEW: Ground→air pop & chase (non-farmable, no goal bonus, dynamic scaling)
+		{ new GroundDribbleJumpReward(340.0f, 180.0f, 260.0f, 350.0f, 200.0f, 0.5f, 1.0f, 0.8f), 10.f }, // LOWERED: Ground dribble → aerial transition (reduced to emphasize air dribbles)
+		{ new PowerslideReward(500.0f, 1.0f), 3.f },  // Low weight: Keep basic mechanics but don't prioritize over aerial play
+		{ new HalfFlipReward(1.0f, 300.0f), 3.f },    // Low weight: Keep basic mechanics but don't prioritize over aerial play
+		{ new CustomWavedashReward(0.3f, 400.0f, 2.0f), 4.f },  // Low weight: Remember wavedash for recovery
+		{ new DirectionalFlipReward(600.0f, 1.5f), 3.f },  // Low weight: Remember directional flips for speed
+		{ new FastAerialReward(400.0f, 3.0f), 4.f },  // Low weight: Remember fast aerials for quick intercepts
+		{ new RecoveryLandingReward(0.5f, 300.0f), 3.f },  // Low weight: Remember proper landing after aerials
+		{ new LandOnBoostReward(0.3f, 200.0f, 2.0f), 4.f },  // Low weight: Remember to land on boost pads for efficient recovery
 
 		// Player-ball
 		{ new FaceBallReward(), 0.25f },
-		{ new VelocityPlayerToBallReward(), 4.f },
-		{ new StrongTouchReward(20, 100), 30 },  // Reduced from 50 to 30 - avoid conflict with air dribble control
+		{ new VelocityPlayerToBallReward(), 1.0f },  // Low weight: Encourage moving toward ball without rushing
+		{ new StrongTouchReward(), 1.0f },           // Low weight: Encourage powerful touches without conflicting with air dribbles
+		{ new TouchAccelReward(), 1.0f },            // Low weight: Encourage speeding up ball without delicate control conflicts
 
 		// Boost - enhanced collection
 		{ new PickupBoostReward(), 12.f },  // Increased from 8 to encourage more collection
 		{ new BigBoostReward(), 35.f },     // Increased from 25 to prioritize big boosts
 		{ new BoostPadProximityReward(2000.0f, 30.0f), 18.f }, // NEW: Reward moving toward pads when low
 		{ new BoostEfficiencyReward(), 12.f }, // NEW: Reward collecting when boost is needed
-		{ new SaveBoostReward(), 0.2f },
+		{ new SaveBoostReward(), 1.0f },    // Low weight: Encourage boost conservation without conflicting with air dribbles
 
-		// Ball acceleration - NEW: Rewards speeding up the ball (helps with shots)
-		{ new TouchAccelReward(), 30 },  // Reduced from 50 to 30 - avoid conflict with air dribble control
+		// Physical play - encourage strategic bumps and demos
+		{ new BumpReward(), 4.0f },          // Encourage strategic bumps to disrupt opponents
+		{ new DemoReward(), 20.0f },         // Encourage demos for tactical advantage (5x bump reward)
 
-		// Game events - REDUCED to focus on scoring
-		{ new ZeroSumReward(new BumpReward(), 0.5f), 12 },  // Reduced from 20 → 12
-		{ new ZeroSumReward(new DemoReward(), 0.5f), 40 },  // Reduced from 80 → 40
-
-		// Scoring rewards - ENHANCED
-		{ new ShotReward(), 70 },
+		// Scoring rewards - REDUCED to prioritize air dribbles
+		{ new ShotReward(), 2.0f },          // Low weight: Encourage shots without overshadowing air dribbles
 		{ new GoalReward(), 350 },
+		{ new OpenNetConcedePunishment(3.0f), 40.f }, // NEW: Punish conceding open-net goals
 		
 		// Own goal punishment
 		{ new OwnGoalPunishment(), 50.f },
-
-		// Helper rewards - guide agent toward successful double touches (similar to OptiV2's dtap_helper/dtap_trajectory)
-		{ new DoubleTouchHelperReward(300.0f, 1200.0f, 3.0f), 20 },  // Rewards first touch that sets up double touches
-		{ new DoubleTouchTrajectoryReward(300.0f, 1500.0f, 100.0f, 2.0f), 12 },  // Continuous reward for good trajectory
 		
-		// Air dribble rewards - focus on air dribbling mechanics (DOUBLED weights to prioritize)
-		{ new AirDribbleReward(0.5f), 80.f },           // Main air dribble reward (40 → 80)
-		{ new AirDribbleBoostReward(500.0f), 60.f },    // Boosting toward ball (30 → 60)
+		// Air dribble rewards - focus on air dribbling mechanics
+		{ new AirDribbleReward(0.5f, 500.0f), 140.f },  // Combined: Main + Boost alignment (80 + 60 = 140)
 		{ new AirDribbleSetupReward(2.0f, 0.3f), 35.f }, // Setup phase reward (ground/wall touches)
-		{ new AirDribbleStartReward(3000.0f), 40.f },   // First aerial touch reward (20 → 40)
-		{ new AirDribbleDistanceReward(3.0f), 100.f }   // Distance-based reward (50 → 100)
+		{ new AirDribbleStartReward(3000.0f), 40.f },     // First aerial touch reward
+		{ new AirDribbleDistanceReward(3.0f), 100.f },   // Distance-based reward (includes 5x goal bonus)
+		{ new AirDribbleGoalCountReward(), 1.0f }        // Metric-only: counts air-dribble goals (1 per goal)
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -74,9 +80,19 @@ EnvCreateResult EnvCreateFunc(int index) {
 	// The AdvancedObsPadded will handle padding so the observation size stays consistent
 	int playersPerTeam = 1;  // 1v1 training (change to 2 for 2v2, 3 for 3v3)
 	auto arena = Arena::Create(GameMode::SOCCAR);
+	
+	// Randomize team assignment to prevent team bias
+	// This ensures the model trains equally on both teams and index positions
+	bool blueFirst = (RocketSim::Math::RandInt(0, 2) == 0);
+	
 	for (int i = 0; i < playersPerTeam; i++) {
-		arena->AddCar(Team::BLUE);
-		arena->AddCar(Team::ORANGE);
+		if (blueFirst) {
+			arena->AddCar(Team::BLUE);
+			arena->AddCar(Team::ORANGE);
+		} else {
+			arena->AddCar(Team::ORANGE);
+			arena->AddCar(Team::BLUE);
+		}
 	}
 
 	EnvCreateResult result = {};
@@ -102,10 +118,32 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 	int blueGoals = 0;
 	int orangeGoals = 0;
 
+	// Track kickoff state per player (for speed tracking)
+	static std::unordered_map<int, bool> inKickoff;
+	static std::unordered_map<int, float> kickoffStartTime;
+	constexpr float maxKickoffTime = 3.0f; // Match KickoffSpeedFlipReward default
+
 	// Add our metrics
 	for (auto& state : states) {
+		// Detect kickoff: ball at center, low velocity (same logic as KickoffSpeedFlipReward)
+		bool ballAtCenter = (state.ball.pos.Length() < 500.0f && abs(state.ball.pos.z) < 100.0f);
+		bool ballStationary = state.ball.vel.Length() < 100.0f;
+
 		if (doExpensiveMetrics) {
 			for (auto& player : state.players) {
+				int carId = player.carId;
+
+				// Track kickoff state per player
+				if (ballAtCenter && ballStationary) {
+					inKickoff[carId] = true;
+					kickoffStartTime[carId] = 0.0f;
+				} else if (inKickoff[carId]) {
+					kickoffStartTime[carId] += state.deltaTime;
+					if (kickoffStartTime[carId] > maxKickoffTime || state.ball.vel.Length() > 500.0f) {
+						inKickoff[carId] = false;
+					}
+				}
+
 				// Basic metrics
 				report.AddAvg("Player/In Air Ratio", !player.isOnGround);
 				report.AddAvg("Player/Ball Touch Ratio", player.ballTouchedStep);
@@ -115,6 +153,12 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 				report.AddAvg("Player/Speed", player.vel.Length());
 				Vec dirToBall = (state.ball.pos - player.pos).Normalized();
 				report.AddAvg("Player/Speed Towards Ball", RS_MAX(0, player.vel.Dot(dirToBall)));
+
+				// Kickoff speed tracking (only during kickoff phase and on ground)
+				if (inKickoff[carId] && player.isOnGround) {
+					float kickoffSpeed = player.vel.Length();
+					report.AddAvg("Kickoff/Speed", kickoffSpeed);
+				}
 
 				// Boost metrics
 				report.AddAvg("Player/Boost", player.boost);
@@ -243,7 +287,7 @@ int main(int argc, char* argv[]) {
 	// Checkpoint saving: Save every 150 iterations
 	// With 50,000 timesteps per iteration, this saves every 7,500,000 timesteps
 	cfg.tsPerSave = 150 * tsPerItr; // 150 iterations = 7,500,000 timesteps
-	cfg.checkpointsToKeep = 2000; // Keep last 2000 checkpoints (~12.5 GB)
+	cfg.checkpointsToKeep = 5000; // Keep last 5000 checkpoints (~31.25 GB)
 
 	// Make the learner with the environment creation function and the config we just made
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);

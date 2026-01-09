@@ -39,7 +39,9 @@ class BaseCPPAgent(BaseIndependentAgent):
 
     def get_helper_process_request(self):
         if self.is_executable_configured():
-            return HelperProcessRequest(python_file_path=None, key=__file__ + str(self.port), executable=self.cpp_executable_path, exe_args = ["-dll-path", game_interface.get_dll_directory()])
+            # Path to the specific checkpoint (relative to executable location)
+            checkpoint_path = "../build/checkpoints/10374503424"
+            return HelperProcessRequest(python_file_path=None, key=__file__ + str(self.port), executable=self.cpp_executable_path, exe_args = ["-dll-path", game_interface.get_dll_directory(), checkpoint_path])
         return None
 
     def is_executable_configured(self):

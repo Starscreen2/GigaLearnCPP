@@ -2,6 +2,8 @@
 #include <RLGymCPP/Rewards/Reward.h>
 #include <RLGymCPP/Gamestates/GameState.h>
 #include <unordered_map>
+#include "CustomBasicMechanicsRewards.h"
+#include "CustomKickoffRewards.h"
 
 namespace RLGC {
 
@@ -30,213 +32,52 @@ namespace RLGC {
 		return offBackboard || inCorner;
 	}
 
-	// Helper reward for touches that set up double touches
-	// Rewards the first touch in a potential double-touch sequence
-	// Guides the agent to make touches that enable follow-up double touches
-	class DoubleTouchHelperReward : public Reward {
-	private:
-		float minHeightForBonus; // Minimum height to reward (default 300 units)
-		float maxHeightForBonus; // Maximum height for max bonus (default 1200 units)
-		float maxTimeWindow; // Time window to consider this a "setup" touch (default 3.0s)
+	// Detects open-net situation for a given attacking team
+	// Returns true if ball is heading toward opponent goal with good speed/alignment
+	// and all defenders are far from their goal
+	inline bool IsOpenNetForAttackingTeam(Team attackingTeam,
+	                                      const GameState& state,
+	                                      float maxDefenderDist = 2000.0f,
+	                                      float minBallSpeed = 1000.0f,
+	                                      float maxBallHeight = 500.0f,
+	                                      float minAlignment = 0.7f) {
+		// Target goal is opponent's goal
+		Vec goalCenter = (attackingTeam == Team::BLUE) ? 
+			CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
 		
-		struct SetupInfo {
-			float timeSinceTouch;
-			Vec touchPos;
-			Vec touchVel;
-			bool hasSetupTouch;
-			bool wasAerial;
-		};
-		std::unordered_map<int, SetupInfo> setupInfo;
-
-	public:
-		DoubleTouchHelperReward(float minHeight = 300.0f, float maxHeight = 1200.0f, float maxTime = 3.0f)
-			: minHeightForBonus(minHeight), maxHeightForBonus(maxHeight), maxTimeWindow(maxTime) {}
-
-		virtual void Reset(const GameState& initialState) override {
-			setupInfo.clear();
-			for (const auto& player : initialState.players) {
-				setupInfo[player.carId] = { 0.0f, Vec(), Vec(), false, false };
-			}
+		// Check if ball is heading toward that goal
+		Vec dirToGoal = (goalCenter - state.ball.pos).Normalized();
+		float goalAlignment = 0.0f;
+		if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
+			Vec ballVelDir = state.ball.vel.Normalized();
+			goalAlignment = ballVelDir.Dot(dirToGoal);
 		}
-
-		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
-			if (!state.prev)
-				return 0;
-
-			int carId = player.carId;
-			SetupInfo& info = setupInfo[carId];
-
-			// Check if this is a new touch
-			if (player.ballTouchedStep) {
-				// Calculate reward for this setup touch
-				float baseReward = 0.2f;
-				
-				// Height bonus (higher = better for double touch setup)
-				float ballHeight = state.ball.pos.z;
-				float heightScore = 0.0f;
-				if (ballHeight >= minHeightForBonus) {
-					if (ballHeight >= maxHeightForBonus) {
-						heightScore = 1.0f; // Max height bonus
-					} else {
-						heightScore = (ballHeight - minHeightForBonus) / (maxHeightForBonus - minHeightForBonus);
-					}
-				}
-				
-				// Aerial bonus (aerial touches are better for double touches)
-				float aerialBonus = (!player.isOnGround) ? 0.4f : 0.0f;
-				
-				// Direction toward goal bonus
-				Vec targetGoal = (player.team == Team::BLUE) ? 
-					CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
-				Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
-				
-				float directionBonus = 0.0f;
-				if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
-					Vec ballVelDir = state.ball.vel.Normalized();
-					float goalAlignment = ballVelDir.Dot(dirToGoal);
-					directionBonus = RS_MAX(0.0f, goalAlignment) * 0.3f; // Up to 0.3 bonus
-				}
-				
-				// Upward velocity bonus (ball going up is good for double touches)
-				float upwardBonus = 0.0f;
-				if (state.ball.vel.z > 200.0f) {
-					upwardBonus = RS_MIN(0.3f, (state.ball.vel.z - 200.0f) / 800.0f); // 200-1000 units/s
-				}
-				
-				float reward = baseReward + (heightScore * 0.5f) + aerialBonus + directionBonus + upwardBonus;
-				
-				// Store touch info for tracking
-				info.hasSetupTouch = true;
-				info.timeSinceTouch = 0.0f;
-				info.touchPos = state.ball.pos;
-				info.touchVel = state.ball.vel;
-				info.wasAerial = !player.isOnGround;
-				
-				return reward;
-			} else {
-				// Track time since setup touch
-				if (info.hasSetupTouch) {
-					info.timeSinceTouch += state.deltaTime;
-					
-					// Reset if too much time has passed
-					if (info.timeSinceTouch > maxTimeWindow) {
-						info.hasSetupTouch = false;
-						info.timeSinceTouch = 0.0f;
-					}
-				}
-			}
-
-			return 0;
-		}
-	};
-
-	// Rewards good ball trajectory that enables double touches
-	// Continuous reward (not just on touches) - rewards maintaining good trajectory
-	class DoubleTouchTrajectoryReward : public Reward {
-	private:
-		float minHeight; // Minimum height to reward (default 300 units)
-		float maxHeight; // Maximum height for reward (default 1500 units)
-		float minUpwardVelocity; // Minimum upward velocity to reward (default 100 units/s)
-		float trajectoryDecayTime; // Time to decay reward after touch (default 2.0s)
 		
-		struct TrajectoryInfo {
-			float timeSinceLastTouch;
-			Vec lastTouchPos;
-			Vec lastTouchVel;
-			bool hasRecentTouch;
-		};
-		std::unordered_map<int, TrajectoryInfo> trajectoryInfo;
-
-	public:
-		DoubleTouchTrajectoryReward(float minH = 300.0f, float maxH = 1500.0f, 
-		                            float minUpVel = 100.0f, float decayTime = 2.0f)
-			: minHeight(minH), maxHeight(maxH), minUpwardVelocity(minUpVel), trajectoryDecayTime(decayTime) {}
-
-		virtual void Reset(const GameState& initialState) override {
-			trajectoryInfo.clear();
-			for (const auto& player : initialState.players) {
-				trajectoryInfo[player.carId] = { 0.0f, Vec(), Vec(), false };
+		// Must have good alignment and speed
+		if (goalAlignment < minAlignment)
+			return false;
+		if (state.ball.vel.Length() < minBallSpeed)
+			return false;
+		if (state.ball.pos.z > maxBallHeight)
+			return false;
+		
+		// Check if all defenders are far from their own goal
+		for (const auto& p : state.players) {
+			if (p.team == attackingTeam)
+				continue; // Skip attacking team players
+			
+			Vec theirGoalCenter = (p.team == Team::BLUE) ? 
+				CommonValues::BLUE_GOAL_CENTER : CommonValues::ORANGE_GOAL_CENTER;
+			float distToGoal = (p.pos - theirGoalCenter).Length();
+			
+			if (distToGoal < maxDefenderDist) {
+				// Someone is back defending, not an open net
+				return false;
 			}
 		}
-
-		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
-			if (!state.prev)
-				return 0;
-
-			int carId = player.carId;
-			TrajectoryInfo& info = trajectoryInfo[carId];
-
-			// Update touch info
-			if (player.ballTouchedStep) {
-				info.hasRecentTouch = true;
-				info.timeSinceLastTouch = 0.0f;
-				info.lastTouchPos = state.ball.pos;
-				info.lastTouchVel = state.ball.vel;
-			} else {
-				info.timeSinceLastTouch += state.deltaTime;
-				
-				// Reset if too much time has passed
-				if (info.timeSinceLastTouch > trajectoryDecayTime) {
-					info.hasRecentTouch = false;
-				}
-			}
-
-			// Only reward if we have a recent touch
-			if (!info.hasRecentTouch)
-				return 0;
-
-			// Check if ball is in good position for double touch
-			float ballHeight = state.ball.pos.z;
-			
-			// Height check
-			if (ballHeight < minHeight || ballHeight > maxHeight)
-				return 0;
-
-			// Calculate height score (optimal around 600-1000 units)
-			float heightScore = 0.0f;
-			if (ballHeight >= minHeight && ballHeight <= maxHeight) {
-				float optimalHeight = (minHeight + maxHeight) / 2.0f; // 900 units
-				float distFromOptimal = abs(ballHeight - optimalHeight);
-				float maxDist = (maxHeight - minHeight) / 2.0f; // 600 units
-				heightScore = 1.0f - RS_MIN(1.0f, distFromOptimal / maxDist);
-			}
-
-			// Upward velocity bonus
-			float upwardScore = 0.0f;
-			if (state.ball.vel.z > minUpwardVelocity) {
-				upwardScore = RS_MIN(1.0f, (state.ball.vel.z - minUpwardVelocity) / 500.0f); // 100-600 units/s
-			}
-
-			// Direction toward goal bonus
-			Vec targetGoal = (player.team == Team::BLUE) ? 
-				CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
-			Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
-			
-			float directionScore = 0.0f;
-			if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
-				Vec ballVelDir = state.ball.vel.Normalized();
-				float goalAlignment = ballVelDir.Dot(dirToGoal);
-				directionScore = RS_MAX(0.0f, goalAlignment) * 0.5f; // Up to 0.5 bonus
-			}
-
-			// Player proximity bonus (player should be close to follow up)
-			float proximityScore = 0.0f;
-			float distToBall = (state.ball.pos - player.pos).Length();
-			if (distToBall < 1000.0f) {
-				proximityScore = 1.0f - RS_MIN(1.0f, distToBall / 1000.0f);
-			}
-
-			// Decay reward over time since touch
-			float timeDecay = 1.0f;
-			if (info.timeSinceLastTouch > 0.5f) {
-				timeDecay = 1.0f - RS_MIN(1.0f, (info.timeSinceLastTouch - 0.5f) / (trajectoryDecayTime - 0.5f));
-			}
-
-			float reward = (heightScore * 0.4f + upwardScore * 0.3f + directionScore * 0.2f + proximityScore * 0.1f) * timeDecay;
-			
-			return reward;
-		}
-	};
+		
+		return true;
+	}
 
 	// Rewards collecting big boost pads (100 boost) more than small pads (12 boost)
 	// Encourages bot to go out of its way for big boosts
@@ -376,12 +217,42 @@ namespace RLGC {
 		}
 	};
 
+	// Punishes conceding a goal when our own net was completely open
+	// Encourages defensive positioning and not overcommitting
+	class OpenNetConcedePunishment : public Reward {
+	private:
+		float penalty; // Magnitude of punishment (positive value)
+
+	public:
+		OpenNetConcedePunishment(float penaltyMag = 3.0f) : penalty(penaltyMag) {}
+
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!isFinal || !state.goalScored)
+				return 0;
+
+			// Did we concede?
+			bool conceded = (player.team == RS_TEAM_FROM_Y(state.ball.pos.y));
+			if (!conceded)
+				return 0;
+
+			// Check if opponent had an open net (they were attacking, we were defending)
+			Team opponentTeam = (player.team == Team::BLUE) ? Team::ORANGE : Team::BLUE;
+			if (!IsOpenNetForAttackingTeam(opponentTeam, state))
+				return 0;
+
+			// Strong punishment for leaving net completely open
+			return -penalty;
+		}
+	};
+
 	// Main air dribble reward - tracks sustained aerial ball control
+	// Combines: base air dribble mechanics + boosting toward ball alignment
 	// Requires: car below ball, boosting, creating height, heading toward opponent net
 	// Rewards optimal height arc (75% to ceiling = 1533 units) and multi-touch sequences
 	class AirDribbleReward : public Reward {
 	private:
 		float intervalSeconds;
+		float maxDistance; // Maximum distance for boost alignment reward (default 500.0f)
 		std::unordered_map<int, float> aerialControlTime;
 		std::unordered_map<int, float> lastTouchTime;
 		std::unordered_map<int, float> peakBallHeight;
@@ -390,7 +261,8 @@ namespace RLGC {
 		std::unordered_map<int, float> lastBoostTime; // Track when boost was last used (for feathering)
 
 	public:
-		AirDribbleReward(float intervalSec = 0.5f) : intervalSeconds(intervalSec) {}
+		AirDribbleReward(float intervalSec = 0.5f, float maxDist = 500.0f) 
+			: intervalSeconds(intervalSec), maxDistance(maxDist) {}
 
 		virtual void Reset(const GameState& initialState) override {
 			aerialControlTime.clear();
@@ -500,8 +372,30 @@ namespace RLGC {
 				float durationMultiplier = 1.0f + (aerialControlTime[carId] / intervalSeconds) * 0.5f;
 				baseReward *= durationMultiplier;
 
+				// COMBINED: Boost alignment reward (from AirDribbleBoostReward)
+				// Only reward when actively boosting (not just feathering grace period)
+				float boostAlignmentReward = 0.0f;
+				if (isBoostingNow && player.boost > 0 && player.prevAction.boost > 0.5f) {
+					float distToBall = (state.ball.pos - player.pos).Length();
+					
+					if (distToBall < maxDistance) {
+						// Calculate direction to ball
+						Vec dirToBall = (state.ball.pos - player.pos).Normalized();
+						
+						// Check if player velocity aligns with direction to ball
+						if (player.vel.Length() > FLT_EPSILON) {
+							Vec velDir = player.vel.Normalized();
+							float alignment = velDir.Dot(dirToBall);
+							
+							// Reward proportional to alignment (0.0 to 1.0)
+							boostAlignmentReward = RS_MAX(0.0f, alignment) * 0.5f;
+						}
+					}
+				}
+
+				// Combine base reward with boost alignment reward
 				lastTouchTime[carId] = aerialControlTime[carId];
-				return baseReward;
+				return baseReward + boostAlignmentReward;
 			} else {
 				// Reset tracking when air dribble ends
 				if (inAirDribble[carId]) {
@@ -509,92 +403,6 @@ namespace RLGC {
 					peakBallHeight[carId] = 0.0f;
 					touchCount[carId] = 0;
 					aerialControlTime[carId] = 0.0f;
-				}
-			}
-
-			return 0;
-		}
-	};
-
-	// Rewards boosting toward ball during air dribbles
-	// Only rewards when conditions match valid air dribble (car below ball, goal alignment, ball going up)
-	class AirDribbleBoostReward : public Reward {
-	private:
-		float maxDistance; // Maximum distance to consider "near ball"
-		std::unordered_map<int, bool> inAirDribble;
-
-	public:
-		AirDribbleBoostReward(float maxDist = 500.0f) : maxDistance(maxDist) {}
-
-		virtual void Reset(const GameState& initialState) override {
-			inAirDribble.clear();
-			for (const auto& player : initialState.players) {
-				inAirDribble[player.carId] = false;
-			}
-		}
-
-		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
-			if (!state.prev)
-				return 0;
-
-			// Don't reward air dribbles in opponent corners or off their backboards
-			if (IsBallInOpponentCornerOrBackboard(player, state))
-				return 0;
-
-			int carId = player.carId;
-			bool isInAir = !player.isOnGround;
-			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
-			bool isBoosting = (player.boost > 0 && player.prevAction.boost > 0.5f);
-
-			// Check if conditions are met for valid air dribble (same as AirDribbleReward)
-			bool isValidAirDribble = isInAir && 
-			                         hasBallContact && 
-			                         player.pos.z < state.ball.pos.z && // Car must be below ball
-			                         state.ball.vel.z > 0; // Ball must be going up
-
-			// Goal alignment check - ball must be heading toward opponent net
-			// Use 75% of goal height (~482 units) to allow crossbar hits
-			// If goal is scored, skip alignment check (goal reward handles it)
-			float goalTargetHeight = CommonValues::GOAL_HEIGHT * 0.75f; // ~482 units (allows crossbar hits)
-			Vec goalCenter = (player.team == Team::BLUE) ? 
-				CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
-			Vec targetGoal = Vec(goalCenter.x, goalCenter.y, goalTargetHeight);
-			Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
-			float goalAlignment = 0.0f;
-			if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
-				Vec ballVelDir = state.ball.vel.Normalized();
-				goalAlignment = ballVelDir.Dot(dirToGoal);
-			}
-
-			// Require minimum goal alignment (on target)
-			// Skip if goal was just scored (goal reward handles it, no penalty)
-			if (goalAlignment < 0.3f && !state.goalScored) {
-				isValidAirDribble = false;
-			}
-
-			// Track if in valid air dribble sequence
-			if (isValidAirDribble) {
-				inAirDribble[carId] = true;
-			} else {
-				inAirDribble[carId] = false;
-			}
-
-			// Only reward when in valid air dribble and boosting
-			if (inAirDribble[carId] && isBoosting) {
-				float distToBall = (state.ball.pos - player.pos).Length();
-				
-				if (distToBall < maxDistance) {
-					// Calculate direction to ball
-					Vec dirToBall = (state.ball.pos - player.pos).Normalized();
-					
-					// Check if player velocity aligns with direction to ball
-					if (player.vel.Length() > FLT_EPSILON) {
-						Vec velDir = player.vel.Normalized();
-						float alignment = velDir.Dot(dirToBall);
-						
-						// Reward proportional to alignment (0.0 to 1.0)
-						return RS_MAX(0.0f, alignment) * 0.5f;
-					}
 				}
 			}
 
@@ -655,6 +463,9 @@ namespace RLGC {
 	private:
 		float maxSetupTime; // Maximum time for setup phase (default 2.0s)
 		float minGoalAlignment; // Minimum goal alignment to reward (default 0.3)
+		float minBallHeightDiff; // Minimum height difference ball above car to count as pop (default 150)
+		float minCarGoalAlignment; // Minimum car facing alignment toward goal (default 0.5)
+		float minCarSpeedTowardGoal; // Minimum car speed toward goal (default 300)
 		std::unordered_map<int, bool> inSetupPhase;
 		std::unordered_map<int, float> setupTime;
 		std::unordered_map<int, int> setupTouchCount;
@@ -691,8 +502,15 @@ namespace RLGC {
 		}
 
 	public:
-		AirDribbleSetupReward(float maxTime = 2.0f, float minAlignment = 0.3f)
-			: maxSetupTime(maxTime), minGoalAlignment(minAlignment) {}
+		AirDribbleSetupReward(float maxTime = 2.0f, float minAlignment = 0.3f,
+		                      float minHeightDiff = 150.0f,
+		                      float minCarGoalAlign = 0.5f,
+		                      float minCarSpeedToGoal = 300.0f)
+			: maxSetupTime(maxTime),
+			  minGoalAlignment(minAlignment),
+			  minBallHeightDiff(minHeightDiff),
+			  minCarGoalAlignment(minCarGoalAlign),
+			  minCarSpeedTowardGoal(minCarSpeedToGoal) {}
 
 		virtual void Reset(const GameState& initialState) override {
 			inSetupPhase.clear();
@@ -736,10 +554,20 @@ namespace RLGC {
 			// Check if ball is going up (arc trajectory)
 			bool ballGoingUp = state.ball.vel.z > 0;
 
+			// Ball must be popped clearly above the car
+			bool ballAboveCar = (state.ball.pos.z > player.pos.z + minBallHeightDiff);
+
+			// Car facing and moving toward opponent goal
+			float carGoalAlignment = player.rotMat.forward.Dot(dirToGoal);
+			float carSpeedTowardGoal = player.vel.Dot(dirToGoal);
+
 			// Detect setup phase: on ground/wall, touching ball, trajectory toward net
-			bool shouldBeInSetup = !isInAir && hasBallContact && 
-			                        goalAlignment >= minGoalAlignment && 
-			                        ballGoingUp;
+			bool shouldBeInSetup = !isInAir && hasBallContact &&
+			                       goalAlignment >= minGoalAlignment &&
+			                       ballGoingUp &&
+			                       ballAboveCar &&
+			                       carGoalAlignment >= minCarGoalAlignment &&
+			                       carSpeedTowardGoal >= minCarSpeedTowardGoal;
 
 			// Start setup phase
 			if (shouldBeInSetup && !inSetupPhase[carId]) {
@@ -861,29 +689,30 @@ namespace RLGC {
 			if (inAirDribble[carId]) {
 				startTime[carId] += state.deltaTime;
 				
-				// Reset if conditions no longer met, too much time passed, or lost contact
-				if (!isValidAirDribble || startTime[carId] > maxTimeWindow || (!isInAir && !hasBallContact)) {
+				// Reset if conditions no longer met, too much time passed, or player hits ground
+				if (!isValidAirDribble || startTime[carId] > maxTimeWindow || !isInAir) {
 					inAirDribble[carId] = false;
 					startTime[carId] = 0.0f;
 				}
 			}
 
 			// Reward on goal scored from air dribble
-			// Gives 1x normal goal reward (350) as bonus, scaled by distance
-			if (state.goalScored && inAirDribble[carId]) {
+			// Gives 5x normal goal reward (350) as base bonus, scaled by distance
+			if (isFinal && state.goalScored && inAirDribble[carId]) {
 				bool scored = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
 				
 				if (scored && startTime[carId] <= maxTimeWindow) {
-					float distance = (player.pos - startPos[carId]).Length();
+					// Use ball's final position for distance calculation
+					float distance = (state.ball.pos - startPos[carId]).Length();
 					
-					// Base reward is 1x normal goal reward (350)
-					constexpr float NORMAL_GOAL_REWARD = 350.0f;
+					// Base reward is 5x normal goal reward (5 * 350 = 1750)
+					constexpr float NORMAL_GOAL_REWARD = 1750.0f;
 					
-					// Scale reward by distance (capped at 3.0x)
-					// Short air dribble (0-2000 units): 1.0x = 350
-					// Medium air dribble (2000-4000 units): 2.0x = 700
-					// Long air dribble (4000+ units): 3.0x = 1050
-					float distanceMultiplier = RS_MIN(3.0f, 1.0f + (distance / 2000.0f));
+					// Scale reward by distance (capped at 2.0x)
+					// Short air dribble (0-2000 units): ~1.0x
+					// Medium air dribble (2000-4000 units): ~1.5x
+					// Long air dribble (4000+ units): 2.0x
+					float distanceMultiplier = RS_MIN(2.0f, 1.0f + (distance / 4000.0f));
 					
 					inAirDribble[carId] = false;
 					startTime[carId] = 0.0f;
@@ -896,24 +725,19 @@ namespace RLGC {
 	}
 };
 
-	// Rewards speed flips on kickoffs - encourages fast ground movement and quick flips
-	class KickoffSpeedFlipReward : public Reward {
+	// Simple counter reward for air dribble goals (for metrics)
+	// Returns 1.0 when a goal is scored directly from a valid air dribble, otherwise 0
+	class AirDribbleGoalCountReward : public Reward {
 	private:
-		float maxKickoffTime;
-		float minSpeedForReward;
-		std::unordered_map<int, float> kickoffStartTime;
-		std::unordered_map<int, bool> inKickoff;
+		std::unordered_map<int, bool> inAirDribble;
 
 	public:
-		KickoffSpeedFlipReward(float maxTime = 3.0f, float minSpeed = 1000.0f)
-			: maxKickoffTime(maxTime), minSpeedForReward(minSpeed) {}
+		AirDribbleGoalCountReward() {}
 
 		virtual void Reset(const GameState& initialState) override {
-			kickoffStartTime.clear();
-			inKickoff.clear();
+			inAirDribble.clear();
 			for (const auto& player : initialState.players) {
-				kickoffStartTime[player.carId] = 0.0f;
-				inKickoff[player.carId] = false;
+				inAirDribble[player.carId] = false;
 			}
 		}
 
@@ -921,62 +745,304 @@ namespace RLGC {
 			if (!state.prev)
 				return 0;
 
+			// Don't count air dribbles in opponent corners or off their backboards
+			if (IsBallInOpponentCornerOrBackboard(player, state))
+				return 0;
+
 			int carId = player.carId;
-			
-			// Detect kickoff: ball at center, low velocity
-			bool ballAtCenter = (state.ball.pos.Length() < 500.0f && abs(state.ball.pos.z) < 100.0f);
-			bool ballStationary = state.ball.vel.Length() < 100.0f;
-			
-			// Track kickoff state per player
-			if (ballAtCenter && ballStationary) {
-				inKickoff[carId] = true;
-				kickoffStartTime[carId] = 0.0f;
-			} else if (inKickoff[carId]) {
-				kickoffStartTime[carId] += state.deltaTime;
-				if (kickoffStartTime[carId] > maxKickoffTime || state.ball.vel.Length() > 500.0f) {
-					inKickoff[carId] = false;
+			bool isInAir = !player.isOnGround;
+			bool hasBallContact = player.ballTouchedStep || player.ballTouchedTick;
+
+			// Valid air dribble conditions (similar to AirDribbleReward / AirDribbleDistanceReward)
+			bool isValidAirDribble = isInAir &&
+			                         hasBallContact &&
+			                         player.pos.z < state.ball.pos.z && // Car must be below ball
+			                         state.ball.vel.z > 0; // Ball must be going up
+
+			// Goal alignment check - ball must be heading toward opponent net
+			float goalTargetHeight = CommonValues::GOAL_HEIGHT * 0.75f;
+			Vec goalCenter = (player.team == Team::BLUE) ?
+				CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
+			Vec targetGoal = Vec(goalCenter.x, goalCenter.y, goalTargetHeight);
+			Vec dirToGoal = (targetGoal - state.ball.pos).Normalized();
+			float goalAlignment = 0.0f;
+			if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
+				Vec ballVelDir = state.ball.vel.Normalized();
+				goalAlignment = ballVelDir.Dot(dirToGoal);
+			}
+
+			if (goalAlignment < 0.3f && !state.goalScored) {
+				isValidAirDribble = false;
+			}
+
+			// Track if we are currently in an air dribble sequence
+			if (isValidAirDribble) {
+				inAirDribble[carId] = true;
+			} else if (!isInAir) {
+				// Leaving the air cancels the sequence
+				inAirDribble[carId] = false;
+			}
+
+			// On goal: if we were in an air dribble, count it as an air dribble goal
+			if (isFinal && state.goalScored && inAirDribble[carId]) {
+				bool scored = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
+
+				if (scored) {
+					inAirDribble[carId] = false;
+					return 1.0f;
 				}
 			}
 
-			if (!inKickoff[carId])
-				return 0;
+			return 0;
+		}
+	};
 
-			// Only reward ground-based speed flips (not aerial)
-			if (!player.isOnGround)
+	// Ground→air pop & chase reward (non-farmable, no goal bonus)
+	// Flow: ground control → pop (jump) → boost-chase while ball rises → second touch aligned to opponent net
+	// Variations get less reward dynamically based on alignment
+	class GroundToAirPopReward : public Reward {
+	private:
+		float maxGroundBallHeight;   // Max ball height for ground control (default 340)
+		float maxGroundCarHeight;    // Max car height for ground control (default 180)
+		float maxDistance;           // Max car-ball distance for ground control (default 260)
+		float minForwardSpeed;       // Min forward speed for ground control (default 350)
+		float minPopHeightGain;      // Min ball height gain after pop (default 120)
+		float maxChaseTime;          // Max time window to chase after pop (default 1.0s)
+		float minAlignment;          // Min ball velocity alignment toward goal (default 0.35)
+		float minCarBallAlign;       // Min car facing ball during chase (default 0.5)
+		float touchBonus;            // Bonus for second touch (default 0.6)
+		float baseScale;             // Base scale for pop/chase reward (default 0.4)
+		
+		struct PopState {
+			bool inPop = false;
+			float time = -1.0f;
+			float popStartBallZ = 0.0f;
+			bool ballGoingUp = false;
+			bool boostedDuringChase = false;
+		};
+		std::unordered_map<int, PopState> pop;
+		
+	public:
+		GroundToAirPopReward(float maxBallH = 340.0f, float maxCarH = 180.0f, float maxDist = 260.0f,
+		                     float minFwd = 350.0f, float minGain = 120.0f, float chaseTime = 1.0f,
+		                     float minAlign = 0.35f, float minCarAlign = 0.5f,
+		                     float touchB = 0.6f, float scale = 0.4f)
+			: maxGroundBallHeight(maxBallH), maxGroundCarHeight(maxCarH),
+			  maxDistance(maxDist), minForwardSpeed(minFwd),
+			  minPopHeightGain(minGain), maxChaseTime(chaseTime),
+			  minAlignment(minAlign), minCarBallAlign(minCarAlign),
+			  touchBonus(touchB), baseScale(scale) {}
+		
+		virtual void Reset(const GameState& initialState) override {
+			pop.clear();
+			for (const auto& p : initialState.players) {
+				pop[p.carId] = PopState();
+			}
+		}
+		
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
 				return 0;
-
-			// Reward high ground speed toward ball
-			float speed = player.vel.Length();
 			
-			// Punish if not flipping and not fast enough during kickoff
-			if (!player.isFlipping && speed < minSpeedForReward) {
-				// Apply punishment proportional to time in kickoff
-				float punishment = -0.1f * (kickoffStartTime[carId] / maxKickoffTime);
-				return punishment;
+			int carId = player.carId;
+			auto& ps = pop[carId];
+			
+			// Ground control preconditions (non-farmable: must be low and close)
+			// Check previous frame for ground carry state
+			bool wasGroundCarry = state.prev->players[player.index].isOnGround &&
+			                       state.prev->ball.pos.z <= maxGroundBallHeight &&
+			                       state.prev->players[player.index].pos.z <= maxGroundCarHeight &&
+			                       (state.prev->ball.pos - state.prev->players[player.index].pos).Length() <= maxDistance &&
+			                       state.prev->players[player.index].vel.Dot(state.prev->players[player.index].rotMat.forward) >= minForwardSpeed;
+			
+			// Detect pop start: leaving ground from a carry state
+			if (wasGroundCarry && !player.isOnGround) {
+				ps.inPop = true;
+				ps.time = 0.0f;
+				ps.popStartBallZ = state.prev->ball.pos.z;
+				ps.ballGoingUp = false;
+				ps.boostedDuringChase = false;
 			}
 			
-			if (speed < minSpeedForReward)
+			if (!ps.inPop)
 				return 0;
-
-			Vec dirToBall = (state.ball.pos - player.pos).Normalized();
-			float speedTowardBall = player.vel.Dot(dirToBall);
 			
-			// Base reward for high speed toward ball
-			float reward = RS_MIN(1.0f, speedTowardBall / CommonValues::CAR_MAX_SPEED);
-
-			// Bonus for using flip (detect flip state)
-			if (player.isFlipping) {
-				reward *= 1.5f; // 50% bonus for flipping
+			// Update timer
+			ps.time += state.deltaTime;
+			if (ps.time > maxChaseTime) {
+				ps.inPop = false;
+				return 0;
 			}
-
-			// Bonus for fast acceleration (speed flip characteristic)
-			float prevSpeed = state.prev->players[player.index].vel.Length();
-			float accel = (speed - prevSpeed) / state.deltaTime;
-			if (accel > 2000.0f) { // Fast acceleration
-				reward *= 1.3f; // 30% bonus
+			
+			float reward = 0.0f;
+			
+			// Check ball rising after pop
+			float heightGain = state.ball.pos.z - ps.popStartBallZ;
+			ps.ballGoingUp = ps.ballGoingUp || (heightGain >= minPopHeightGain && state.ball.vel.z > 0);
+			
+			// Require boosting while chasing upward
+			bool boosting = (player.boost > 0 && player.prevAction.boost > 0.1f);
+			if (boosting)
+				ps.boostedDuringChase = true;
+			
+			// Car facing ball
+			Vec toBall = (state.ball.pos - player.pos).Normalized();
+			float carBallAlign = player.rotMat.forward.Dot(toBall);
+			
+			// Ball + car toward opponent goal
+			Vec goalCenter = (player.team == Team::BLUE) ? 
+				CommonValues::ORANGE_GOAL_CENTER : CommonValues::BLUE_GOAL_CENTER;
+			Vec dirToGoal = (goalCenter - state.ball.pos).Normalized();
+			float ballGoalAlign = 0.0f;
+			if (state.ball.vel.Length() > FLT_EPSILON && dirToGoal.Length() > FLT_EPSILON) {
+				ballGoalAlign = state.ball.vel.Normalized().Dot(dirToGoal);
 			}
+			float carGoalAlign = player.rotMat.forward.Dot(dirToGoal);
+			
+			// Core conditions during chase
+			bool chaseOk = ps.ballGoingUp &&
+			               ps.boostedDuringChase &&
+			               carBallAlign >= minCarBallAlign &&
+			               ballGoalAlign >= minAlignment &&
+			               carGoalAlign >= minAlignment &&
+			               player.pos.z < state.ball.pos.z; // Car below ball
+			
+			// Continuous reward while satisfying chase (scales with alignment quality)
+			if (chaseOk) {
+				float alignScore = 0.5f * RS_MAX(0.0f, (ballGoalAlign - minAlignment) / (1.0f - minAlignment)) +
+				                   0.5f * RS_MAX(0.0f, (carBallAlign - minCarBallAlign) / (1.0f - minCarBallAlign));
+				reward += baseScale * alignScore;
+			}
+			
+			// Bonus on second touch while conditions hold
+			if ((player.ballTouchedStep || player.ballTouchedTick) && chaseOk) {
+				reward += touchBonus * RS_CLAMP(ballGoalAlign, 0.0f, 1.0f);
+				ps.inPop = false; // One-time reward per pop->chase->touch
+			}
+			
+			// Abort if we land
+			if (player.isOnGround)
+				ps.inPop = false;
+			
+			return reward;
+		}
+	};
 
-			return reward * 0.5f; // Scale down to reasonable level
+	// Rewards jumping and double jumping while ground dribbling, and aerial touches above minimum height
+	// Encourages transitioning from ground dribbles to aerial play
+	class GroundDribbleJumpReward : public Reward {
+	private:
+		float maxGroundBallHeight;   // Max ball height for ground dribble (default 340)
+		float maxGroundCarHeight;     // Max car height for ground dribble (default 180)
+		float maxDistance;            // Max car-ball distance for ground dribble (default 260)
+		float minForwardSpeed;        // Min forward speed for ground dribble (default 350)
+		float minAerialTouchHeight;   // Min ball height for aerial touch reward (default 200)
+		float jumpReward;             // Reward for single jump (default 0.5)
+		float doubleJumpReward;       // Reward for double jump (default 1.0)
+		float aerialTouchReward;      // Reward for aerial touch above min height (default 0.8)
+		
+		struct DribbleState {
+			bool inGroundDribble = false;
+			bool wasOnGround = false;
+			bool wasInGroundDribble = false; // Track previous frame's dribble state
+			bool jumpRewarded = false;
+			bool doubleJumpRewarded = false;
+		};
+		std::unordered_map<int, DribbleState> dribble;
+		
+	public:
+		GroundDribbleJumpReward(
+			float maxBallH = 340.0f, float maxCarH = 180.0f, float maxDist = 260.0f,
+			float minFwd = 350.0f, float minAerialH = 200.0f,
+			float jumpR = 0.5f, float doubleJumpR = 1.0f, float aerialTouchR = 0.8f)
+			: maxGroundBallHeight(maxBallH), maxGroundCarHeight(maxCarH),
+			  maxDistance(maxDist), minForwardSpeed(minFwd),
+			  minAerialTouchHeight(minAerialH),
+			  jumpReward(jumpR), doubleJumpReward(doubleJumpR), aerialTouchReward(aerialTouchR) {}
+		
+		virtual void Reset(const GameState& initialState) override {
+			dribble.clear();
+			for (const auto& p : initialState.players) {
+				dribble[p.carId] = DribbleState();
+			}
+		}
+		
+		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+			if (!state.prev)
+				return 0;
+			
+			int carId = player.carId;
+			auto& ds = dribble[carId];
+			float reward = 0.0f;
+			
+			// Check if in ground dribble state (ball low, car close, forward speed)
+			bool isGroundDribble = player.isOnGround &&
+			                       state.ball.pos.z <= maxGroundBallHeight &&
+			                       player.pos.z <= maxGroundCarHeight &&
+			                       (state.ball.pos - player.pos).Length() <= maxDistance &&
+			                       player.vel.Dot(player.rotMat.forward) >= minForwardSpeed;
+			
+			// Check previous frame's actual state (recalculate from previous frame data)
+			const Player& prevPlayer = state.prev->players[player.index];
+			bool wasOnGround = prevPlayer.isOnGround;
+			bool wasInGroundDribble = prevPlayer.isOnGround &&
+			                           state.prev->ball.pos.z <= maxGroundBallHeight &&
+			                           prevPlayer.pos.z <= maxGroundCarHeight &&
+			                           (state.prev->ball.pos - prevPlayer.pos).Length() <= maxDistance &&
+			                           prevPlayer.vel.Dot(prevPlayer.rotMat.forward) >= minForwardSpeed;
+			
+			// Update ground dribble state
+			ds.wasInGroundDribble = ds.inGroundDribble;
+			ds.inGroundDribble = isGroundDribble;
+			ds.wasOnGround = wasOnGround;
+			
+			// Detect jump transition: was in ground dribble, now in air
+			bool justLeftGround = wasInGroundDribble && wasOnGround && !player.isOnGround;
+			
+			// Reward single jump (when transitioning from ground dribble to air)
+			if (justLeftGround && player.hasJumped && !player.hasDoubleJumped && !ds.jumpRewarded) {
+				reward += jumpReward;
+				ds.jumpRewarded = true;
+			}
+			
+			// Reward double jump (higher reward, replaces single jump if both happen)
+			if (justLeftGround && player.hasDoubleJumped && !ds.doubleJumpRewarded) {
+				if (ds.jumpRewarded) {
+					// Already gave single jump reward, so give difference
+					reward += (doubleJumpReward - jumpReward);
+				} else {
+					// Give full double jump reward
+					reward += doubleJumpReward;
+				}
+				ds.doubleJumpRewarded = true;
+			}
+			
+			// Also check for delayed double jump (if we're in air and just double jumped after single jump)
+			// This handles cases where double jump happens a few frames after single jump
+			if (!player.isOnGround && player.hasDoubleJumped && !ds.doubleJumpRewarded && ds.jumpRewarded) {
+				// Double jump happened after single jump - give the difference
+				reward += (doubleJumpReward - jumpReward);
+				ds.doubleJumpRewarded = true;
+			}
+			
+			// Reward aerial touch above minimum height when ball is gaining height
+			// Only reward if we jumped from a ground dribble (tracked by jumpRewarded flag)
+			// Car should be below ball (proper aerial touch position)
+			if ((ds.jumpRewarded || ds.doubleJumpRewarded) && 
+			    (player.ballTouchedStep || player.ballTouchedTick) &&
+			    state.ball.pos.z >= minAerialTouchHeight &&
+			    state.ball.vel.z > 0 && // Ball gaining height
+			    player.pos.z < state.ball.pos.z) { // Car below ball (proper aerial position)
+				reward += aerialTouchReward;
+			}
+			
+			// Reset jump tracking when back on ground
+			if (player.isOnGround) {
+				ds.jumpRewarded = false;
+				ds.doubleJumpRewarded = false;
+			}
+			
+			return reward;
 		}
 	};
 

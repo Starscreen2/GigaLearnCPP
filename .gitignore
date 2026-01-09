@@ -59,3 +59,4 @@ libtorch*
 
 /checkpoints
 /wandb
+.cursorignore
