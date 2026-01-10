@@ -1,0 +1,10 @@
+{
+    "return_stat": {
+        "count": 14922750,
+        "mean": 227.30608992838725,
+        "var": 435574629698.7253
+    },
+    "run_id": "ykjyocra",
+    "total_iterations": 99485,
+    "total_timesteps": 7170005504
+}

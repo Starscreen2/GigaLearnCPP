@@ -1,0 +1,10 @@
+{
+    "return_stat": {
+        "count": 407850,
+        "mean": 76.98703393805953,
+        "var": 1801507190.8987978
+    },
+    "run_id": "l2pmim7w",
+    "total_iterations": 2719,
+    "total_timesteps": 220691712
+}

@@ -40,7 +40,7 @@ class BaseCPPAgent(BaseIndependentAgent):
     def get_helper_process_request(self):
         if self.is_executable_configured():
             # Path to the milestone checkpoint (relative to executable location)
-            milestone_path = "../milestones/milestone_6150036480_20260105_233400"
+            milestone_path = "../milestones/milestone_7815067136_20260107_005455"
             return HelperProcessRequest(python_file_path=None, key=__file__ + str(self.port), executable=self.cpp_executable_path, exe_args = ["-dll-path", game_interface.get_dll_directory(), milestone_path])
         return None
 
